@@ -37,22 +37,24 @@ select {
 .sidebar {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 16px;
   min-height: 100vh;
   padding: 0 12px 24px;
   background: linear-gradient(180deg, rgba(37, 38, 40, 0.96) 0%, rgba(31, 32, 34, 0.96) 100%);
   border-right: 1px solid rgba(255, 255, 255, 0.07);
-  overflow: auto;
+  overflow: hidden;
 }
 
 .window-drag-strip {
-  flex: 0 0 52px;
-  margin: 0 -12px;
+  display: block;
+  flex: 0 0 30px;
+  margin: 0 -12px -6px;
   cursor: default;
   -webkit-app-region: drag;
 }
 
 .cluster-card {
+  flex: 0 0 auto;
   position: relative;
   padding: 0 10px;
 }
@@ -239,12 +241,20 @@ select {
 }
 
 .namespace-panel {
+  display: flex;
+  flex: 2 1 0;
+  flex-direction: column;
   min-height: 0;
   overflow: hidden;
 }
 
 .crd-panel {
-  min-height: 180px;
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  max-height: 33%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .panel-heading {
@@ -256,8 +266,9 @@ select {
 
 .namespace-list {
   display: grid;
+  align-content: start;
+  flex: 1 1 auto;
   gap: 1px;
-  max-height: 280px;
   overflow: auto;
   padding-right: 4px;
 }
@@ -275,8 +286,9 @@ select {
 
 .crd-list {
   display: grid;
+  align-content: start;
+  flex: 1 1 auto;
   gap: 12px;
-  max-height: 360px;
   overflow: auto;
   padding: 0 4px 8px;
 }
@@ -615,6 +627,10 @@ select {
   gap: 16px;
 }
 
+.overview-grid.single {
+  grid-template-columns: 1fr;
+}
+
 .info-card {
   min-height: 116px;
   border-radius: 7px;
@@ -854,10 +870,6 @@ select {
 
   .sidebar {
     min-height: auto;
-  }
-
-  .namespace-list {
-    max-height: 220px;
   }
 
   .content {
