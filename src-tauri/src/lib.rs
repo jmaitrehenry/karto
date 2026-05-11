@@ -544,15 +544,20 @@ async fn start_workload_log_stream(
     abort_log_stream(&streams, &stream_id);
 
     let client = client_for_context(&context).await?;
-    let selector = workload_selector(client.clone(), &namespace, &kind, &name).await?;
     let pods_api: Api<Pod> = Api::namespaced(client.clone(), &namespace);
-    let pods = pods_api
-        .list(&ListParams::default().labels(&label_selector(&selector)))
-        .await
-        .map_err(kube_error)?;
+    let pods = if kind == "Pod" {
+        vec![pods_api.get(&name).await.map_err(kube_error)?]
+    } else {
+        let selector = workload_selector(client.clone(), &namespace, &kind, &name).await?;
+        pods_api
+            .list(&ListParams::default().labels(&label_selector(&selector)))
+            .await
+            .map(|list| list.items)
+            .map_err(kube_error)?
+    };
     let mut handles = Vec::new();
 
-    for pod in pods.items {
+    for pod in pods {
         let pod_name = pod.name_any();
         let container_names = pod
             .spec

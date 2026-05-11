@@ -195,6 +195,7 @@ export function App() {
   const clusterMenuRef = useRef<HTMLDivElement>(null);
   const selectedResourceNamespace =
     selectedResource?.namespace ?? selectedNamespace;
+  const shouldShowCrdPanel = crds.status === "loading" || crds.status === "error" || crds.data.length > 0;
 
   useEffect(() => {
     void loadContexts();
@@ -704,46 +705,48 @@ export function App() {
           )}
         </section>
 
-        <section className="crd-panel">
-          <div className="panel-heading">
-            <span>Custom Resources</span>
-            {crds.status === "loading" ? <Loader2 className="spin" size={14} /> : null}
-          </div>
-
-          {crds.status === "error" ? (
-            <EmptyState
-              icon={<CircleAlert size={18} />}
-              title="CRDs unavailable"
-              detail={crds.message}
-            />
-          ) : (
-            <div className="crd-list">
-              {crds.data.map((group) => (
-                <div className="crd-group" key={group.group}>
-                  <div className="crd-group-title">{group.group}</div>
-                  {group.resources.map((resource) => (
-                    <button
-                      className={
-                        selectedCrd?.group === resource.group &&
-                        selectedCrd?.kind === resource.kind
-                          ? "selected"
-                          : ""
-                      }
-                      key={`${resource.group}-${resource.kind}`}
-                      onClick={() => {
-                        setSelectedResource(null);
-                        setSelectedCrd(resource);
-                      }}
-                      type="button"
-                    >
-                      {resource.kind}
-                    </button>
-                  ))}
-                </div>
-              ))}
+        {shouldShowCrdPanel ? (
+          <section className="crd-panel">
+            <div className="panel-heading">
+              <span>Custom Resources</span>
+              {crds.status === "loading" ? <Loader2 className="spin" size={14} /> : null}
             </div>
-          )}
-        </section>
+
+            {crds.status === "error" ? (
+              <EmptyState
+                icon={<CircleAlert size={18} />}
+                title="CRDs unavailable"
+                detail={crds.message}
+              />
+            ) : (
+              <div className="crd-list">
+                {crds.data.map((group) => (
+                  <div className="crd-group" key={group.group}>
+                    <div className="crd-group-title">{group.group}</div>
+                    {group.resources.map((resource) => (
+                      <button
+                        className={
+                          selectedCrd?.group === resource.group &&
+                          selectedCrd?.kind === resource.kind
+                            ? "selected"
+                            : ""
+                        }
+                        key={`${resource.group}-${resource.kind}`}
+                        onClick={() => {
+                          setSelectedResource(null);
+                          setSelectedCrd(resource);
+                        }}
+                        type="button"
+                      >
+                        {resource.kind}
+                      </button>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        ) : null}
       </aside>
 
       <section className="content">
@@ -1136,12 +1139,13 @@ function WorkloadDetailsView({
   }
 
   const hasImages = workload.images.length > 0;
-  const hasResourceTotals = [
+  const resourceTotals = [
     workload.resource_totals.cpu_requested,
     workload.resource_totals.cpu_limited,
     workload.resource_totals.memory_requested,
     workload.resource_totals.memory_limited
-  ].some((value) => value !== "-");
+  ];
+  const hasResourceTotals = resourceTotals.some(hasMeaningfulResourceValue);
   const hasPods = workload.pods.length > 0;
   const hasServices = workload.services.length > 0;
   const isWorkload = supportsLogs(fallback);
@@ -1163,7 +1167,7 @@ function WorkloadDetailsView({
 
       <section className="details-section">
         <h2>Overview</h2>
-        <div className="overview-grid">
+        <div className={hasResourceTotals ? "overview-grid" : "overview-grid single"}>
           <div className="info-card">
             <InfoRow label="Kind" value={workload.kind} />
             <InfoRow label="Namespace" value={workload.namespace} />
@@ -1497,7 +1501,11 @@ function iconForKind(kind: string) {
 }
 
 function supportsLogs(resource: ResourceSummary) {
-  return ["Deployment", "StatefulSet", "DaemonSet"].includes(resource.kind);
+  return ["Deployment", "StatefulSet", "DaemonSet", "Pod"].includes(resource.kind);
+}
+
+function hasMeaningfulResourceValue(value: string) {
+  return !["", "-", "0", "0m", "0.00", "0.00Mi", "0.00Gi"].includes(value.trim());
 }
 
 function statusTone(status: string) {
