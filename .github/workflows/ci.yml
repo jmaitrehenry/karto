@@ -81,10 +81,13 @@ jobs:
         include:
           - os: macos-latest
             artifact_name: karto-macos-bundle
+            artifact_path: src-tauri/target/release/bundle/macos/Karto.app
           - os: ubuntu-latest
             artifact_name: karto-linux-bundle
+            artifact_path: src-tauri/target/release/karto
           - os: windows-latest
             artifact_name: karto-windows-bundle
+            artifact_path: src-tauri/target/release/karto.exe
 
     steps:
       - name: Checkout
@@ -140,7 +143,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: src-tauri/target/release/bundle
+          path: ${{ matrix.artifact_path }}
           if-no-files-found: error
 
   release:
