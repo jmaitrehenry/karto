@@ -12,10 +12,12 @@ import {
   List,
   Layers3,
   Loader2,
+  Moon,
   RefreshCw,
   Search,
   Server,
   ShieldCheck,
+  Sun,
   TerminalSquare
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -122,6 +124,9 @@ type EventSummary = {
 };
 
 type DetailTab = "overview" | "logs" | "events" | "yaml";
+type ThemeMode = "light" | "dark";
+
+const themeStorageKey = "karto-theme";
 
 type LoadState<T> =
   | { status: "idle"; data: T }
@@ -137,6 +142,19 @@ const emptyCustomResources: CustomResourceTable = {
 };
 
 export function App() {
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
+    if (typeof window === "undefined") return "dark";
+
+    const savedTheme = window.localStorage.getItem(themeStorageKey);
+
+    if (savedTheme === "light" || savedTheme === "dark") {
+      return savedTheme;
+    }
+
+    return window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark"
+      : "light";
+  });
   const [contexts, setContexts] = useState<LoadState<ClusterContext[]>>({
     status: "loading",
     data: []
@@ -201,6 +219,12 @@ export function App() {
     selectedResource?.namespace ?? selectedNamespace;
   const shouldShowCrdPanel =
     crds.status === "loading" || crds.status === "error" || crds.data.length > 0;
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = themeMode;
+    document.documentElement.style.colorScheme = themeMode;
+    window.localStorage.setItem(themeStorageKey, themeMode);
+  }, [themeMode]);
 
   useEffect(() => {
     void loadContexts();
@@ -619,6 +643,10 @@ export function App() {
     });
   }
 
+  function toggleThemeMode() {
+    setThemeMode((current) => (current === "dark" ? "light" : "dark"));
+  }
+
   return (
     <main className="shell">
       <aside className="sidebar">
@@ -883,33 +911,53 @@ export function App() {
             </div>
           )}
 
-          <button
-            className="refresh"
-            disabled={!selectedContext}
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={() => {
-              if (selectedContext) void loadNamespaces(selectedContext);
-              if (selectedContext) {
-                void loadResources(selectedContext, selectedNamespace);
+          <div className="topbar-actions">
+            <button
+              aria-label={
+                themeMode === "dark"
+                  ? "Use Catppuccin Latte"
+                  : "Use Catppuccin Frappe"
               }
-              if (selectedContext && selectedCrd) {
-                void loadCustomResources(selectedContext, selectedCrd);
+              className="icon-button"
+              onClick={toggleThemeMode}
+              onPointerDown={(event) => event.stopPropagation()}
+              title={
+                themeMode === "dark"
+                  ? "Use Catppuccin Latte"
+                  : "Use Catppuccin Frappe"
               }
-              if (selectedContext && selectedResourceNamespace && selectedResource) {
-                void loadDetails(selectedContext, selectedResourceNamespace, selectedResource);
-                if (activeDetailTab === "events") {
-                  void loadEvents(selectedContext, selectedResourceNamespace, selectedResource);
+              type="button"
+            >
+              {themeMode === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+            </button>
+            <button
+              className="refresh"
+              disabled={!selectedContext}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => {
+                if (selectedContext) void loadNamespaces(selectedContext);
+                if (selectedContext) {
+                  void loadResources(selectedContext, selectedNamespace);
                 }
-                if (activeDetailTab === "yaml") {
-                  void loadYaml(selectedContext, selectedResourceNamespace, selectedResource);
+                if (selectedContext && selectedCrd) {
+                  void loadCustomResources(selectedContext, selectedCrd);
                 }
-              }
-            }}
-            type="button"
-          >
-            <RefreshCw size={16} />
-            Refresh
-          </button>
+                if (selectedContext && selectedResourceNamespace && selectedResource) {
+                  void loadDetails(selectedContext, selectedResourceNamespace, selectedResource);
+                  if (activeDetailTab === "events") {
+                    void loadEvents(selectedContext, selectedResourceNamespace, selectedResource);
+                  }
+                  if (activeDetailTab === "yaml") {
+                    void loadYaml(selectedContext, selectedResourceNamespace, selectedResource);
+                  }
+                }
+              }}
+              type="button"
+            >
+              <RefreshCw size={16} />
+              Refresh
+            </button>
+          </div>
         </header>
 
         <div className={selectedResource ? "subbar detail-subbar" : "subbar"}>
