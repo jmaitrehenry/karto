@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Check,
   ChevronDown,
+  ChevronRight,
   CircleAlert,
   Cloud,
   Database,
@@ -158,6 +159,9 @@ export function App() {
     status: "idle",
     data: []
   });
+  const [expandedCrdGroups, setExpandedCrdGroups] = useState<Set<string>>(
+    () => new Set()
+  );
   const [selectedCrd, setSelectedCrd] = useState<CrdResource | null>(null);
   const [customResources, setCustomResources] = useState<
     LoadState<CustomResourceTable>
@@ -195,7 +199,8 @@ export function App() {
   const clusterMenuRef = useRef<HTMLDivElement>(null);
   const selectedResourceNamespace =
     selectedResource?.namespace ?? selectedNamespace;
-  const shouldShowCrdPanel = crds.status === "loading" || crds.status === "error" || crds.data.length > 0;
+  const shouldShowCrdPanel =
+    crds.status === "loading" || crds.status === "error" || crds.data.length > 0;
 
   useEffect(() => {
     void loadContexts();
@@ -428,6 +433,18 @@ export function App() {
     try {
       const nextCrds = await invoke<CrdGroup[]>("list_crds", { context });
       setCrds({ status: "idle", data: nextCrds });
+      setExpandedCrdGroups((current) => {
+        const availableGroups = new Set(nextCrds.map((group) => group.group));
+        const nextExpanded = new Set(
+          [...current].filter((group) => availableGroups.has(group))
+        );
+
+        if (nextExpanded.size > 0) {
+          return nextExpanded;
+        }
+
+        return new Set(nextCrds.slice(0, 2).map((group) => group.group));
+      });
     } catch (error) {
       setCrds({
         status: "error",
@@ -588,6 +605,20 @@ export function App() {
     setSelectedResource(previous);
   }
 
+  function toggleCrdGroup(group: string) {
+    setExpandedCrdGroups((current) => {
+      const next = new Set(current);
+
+      if (next.has(group)) {
+        next.delete(group);
+      } else {
+        next.add(group);
+      }
+
+      return next;
+    });
+  }
+
   return (
     <main className="shell">
       <aside className="sidebar">
@@ -722,25 +753,43 @@ export function App() {
               <div className="crd-list">
                 {crds.data.map((group) => (
                   <div className="crd-group" key={group.group}>
-                    <div className="crd-group-title">{group.group}</div>
-                    {group.resources.map((resource) => (
-                      <button
-                        className={
-                          selectedCrd?.group === resource.group &&
-                          selectedCrd?.kind === resource.kind
-                            ? "selected"
-                            : ""
-                        }
-                        key={`${resource.group}-${resource.kind}`}
-                        onClick={() => {
-                          setSelectedResource(null);
-                          setSelectedCrd(resource);
-                        }}
-                        type="button"
-                      >
-                        {resource.kind}
-                      </button>
-                    ))}
+                    <button
+                      className="crd-group-title"
+                      onClick={() => toggleCrdGroup(group.group)}
+                      type="button"
+                    >
+                      <img
+                        alt=""
+                        className="crd-favicon"
+                        src={faviconUrlForCrdGroup(group.group)}
+                      />
+                      <span>{group.group}</span>
+                      {expandedCrdGroups.has(group.group) ? (
+                        <ChevronDown size={15} />
+                      ) : (
+                        <ChevronRight size={15} />
+                      )}
+                    </button>
+                    {expandedCrdGroups.has(group.group)
+                      ? group.resources.map((resource) => (
+                          <button
+                            className={
+                              selectedCrd?.group === resource.group &&
+                              selectedCrd?.kind === resource.kind
+                                ? "selected"
+                                : ""
+                            }
+                            key={`${resource.group}-${resource.kind}`}
+                            onClick={() => {
+                              setSelectedResource(null);
+                              setSelectedCrd(resource);
+                            }}
+                            type="button"
+                          >
+                            {resource.kind}
+                          </button>
+                        ))
+                      : null}
                   </div>
                 ))}
               </div>
@@ -1506,6 +1555,20 @@ function supportsLogs(resource: ResourceSummary) {
 
 function hasMeaningfulResourceValue(value: string) {
   return !["", "-", "0", "0m", "0.00", "0.00Mi", "0.00Gi"].includes(value.trim());
+}
+
+function faviconUrlForCrdGroup(group: string) {
+  return `https://www.google.com/s2/favicons?domain=${rootDomain(group)}&sz=32`;
+}
+
+function rootDomain(domain: string) {
+  const parts = domain.split(".").filter(Boolean);
+
+  if (parts.length <= 2) {
+    return domain;
+  }
+
+  return parts.slice(-2).join(".");
 }
 
 function statusTone(status: string) {
