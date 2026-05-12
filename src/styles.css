@@ -914,14 +914,66 @@ select {
   margin: 0;
   border: 1px solid rgb(var(--text-rgb) / 0.1);
   border-radius: 9px;
-  padding: 14px;
+  padding: 10px 14px 10px 0;
   color: var(--text);
   background: rgb(var(--crust-rgb, var(--mantle-rgb)) / 0.66);
   font-family: "SF Mono", ui-monospace, Menlo, monospace;
   font-size: 11px;
   line-height: 1.55;
+}
+
+.yaml-line {
+  display: flex;
+  align-items: baseline;
+  min-height: 1.55em;
+  border-radius: 3px;
+}
+
+.yaml-line:hover {
+  background: rgb(var(--text-rgb) / 0.04);
+}
+
+.yaml-gutter {
+  width: 20px;
+  min-width: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.yaml-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--overlay-1);
+  padding: 0;
+  display: flex;
+  align-items: center;
+  line-height: 1;
+  opacity: 0.5;
+  transition: opacity 0.1s;
+}
+
+.yaml-toggle:hover {
+  opacity: 1;
+  color: var(--text);
+}
+
+.yaml-line-text {
+  flex: 1;
   white-space: pre;
 }
+
+.yaml-key { color: var(--blue); }
+.yaml-value { color: var(--text); }
+.yaml-string { color: var(--green); }
+.yaml-number { color: var(--mauve); }
+.yaml-bool { color: var(--yellow); }
+.yaml-null { color: var(--overlay-1); font-style: italic; }
+.yaml-comment { color: var(--overlay-1); }
+.yaml-punctuation { color: var(--subtext-0); }
+.yaml-ellipsis { color: var(--overlay-1); font-style: italic; }
 
 .empty-state,
 .table-placeholder {
