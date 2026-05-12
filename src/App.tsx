@@ -1300,11 +1300,13 @@ function WorkloadDetailsView({
 
       {isWorkload || hasPods ? (
         <section className="details-section">
-          <h2>Pods</h2>
+          <h2>{workload.kind === "Pod" ? "Containers" : "Pods"}</h2>
           <DetailsTable
-            empty="No pods match this workload selector."
-            headers={["Name", "Age", "Containers", "Restarts", "Status"]}
-            onRowClick={(index) => {
+            empty={workload.kind === "Pod" ? "No containers found." : "No pods match this workload selector."}
+            headers={workload.kind === "Pod"
+              ? ["Name", "Ready", "Restarts", "Status"]
+              : ["Name", "Age", "Containers", "Restarts", "Status"]}
+            onRowClick={workload.kind === "Pod" ? undefined : (index) => {
               const pod = workload.pods[index];
               onOpenResource({
                 name: pod.name,
@@ -1315,15 +1317,26 @@ function WorkloadDetailsView({
                 age: pod.age
               });
             }}
-            rows={workload.pods.map((pod) => [
-              pod.name,
-              pod.age ?? "-",
-              pod.containers,
-              String(pod.restarts),
-              <span className={`status ${statusTone(pod.status)}`} key={pod.name}>
-                {pod.status}
-              </span>
-            ])}
+            rows={workload.pods.map((pod) =>
+              workload.kind === "Pod"
+                ? [
+                    pod.name,
+                    pod.containers,
+                    String(pod.restarts),
+                    pod.status === "Completed"
+                      ? <Check size={14} className="status-completed" key={pod.name} />
+                      : <span className={`status ${statusTone(pod.status)}`} key={pod.name}>{pod.status}</span>
+                  ]
+                : [
+                    pod.name,
+                    pod.age ?? "-",
+                    pod.containers,
+                    String(pod.restarts),
+                    <span className={`status ${statusTone(pod.status)}`} key={pod.name}>
+                      {pod.status}
+                    </span>
+                  ]
+            )}
           />
         </section>
       ) : null}
