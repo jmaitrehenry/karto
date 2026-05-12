@@ -1229,13 +1229,13 @@ fn event_summary(event: CoreEvent) -> EventSummary {
     let last_seen = event
         .last_timestamp
         .as_ref()
-        .map(|time| time.0.to_rfc3339())
-        .or_else(|| event.event_time.as_ref().map(|time| time.0.to_rfc3339()))
+        .map(|time| age(time.0.timestamp()))
+        .or_else(|| event.event_time.as_ref().map(|time| age(time.0.timestamp())))
         .or_else(|| {
             event
                 .first_timestamp
                 .as_ref()
-                .map(|time| time.0.to_rfc3339())
+                .map(|time| age(time.0.timestamp()))
         })
         .unwrap_or_else(|| "-".to_string());
 
@@ -1260,6 +1260,7 @@ fn custom_resource_columns(resource: &CrdResource) -> Vec<String> {
         resource
             .printer_columns
             .iter()
+            .filter(|column| column.name.to_lowercase() != "age")
             .map(|column| column.name.clone()),
     );
     columns.push("Age".to_string());
@@ -1281,6 +1282,7 @@ fn custom_resource_row(resource: &CrdResource, object: DynamicObject) -> Vec<Str
         resource
             .printer_columns
             .iter()
+            .filter(|column| column.name.to_lowercase() != "age")
             .map(|column| print_json_path(&value, &column.json_path)),
     );
     row.push(age_for(&object).unwrap_or_else(|| "-".to_string()));

@@ -1157,8 +1157,8 @@ function CustomResourceTableView({
       <table className="resource-table">
         <thead>
           <tr>
-            {table.data.columns.map((column) => (
-              <th key={column}>{column}</th>
+            {table.data.columns.map((column, index) => (
+              <th key={`${column}-${index}`}>{column}</th>
             ))}
           </tr>
         </thead>
