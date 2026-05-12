@@ -480,7 +480,7 @@ async fn get_workload_details(
             let api: Api<Pod> = Api::namespaced(client, &namespace);
             let pod = api.get(&name).await.map_err(kube_error)?;
             let status = pod_summary(pod.clone(), "Pod").status;
-            Ok(generic_details(pod, "Pod", namespace, &status, None))
+            Ok(pod_details(pod, namespace, &status))
         }
         "Service" => {
             let api: Api<Service> = Api::namespaced(client, &namespace);
@@ -1033,6 +1033,76 @@ async fn workload_details_from_daemon_set(
         pods: pods_for(client.clone(), &namespace, &selector).await?,
         services: services_for(client, &namespace, &template_labels).await?,
     })
+}
+
+fn pod_details(pod: Pod, namespace: String, status: &str) -> WorkloadDetails {
+    let labels = pod.meta().labels.clone().unwrap_or_default();
+    let annotations = pod.meta().annotations.clone().unwrap_or_default();
+
+    let container_statuses = pod
+        .status
+        .as_ref()
+        .and_then(|s| s.container_statuses.as_ref())
+        .cloned()
+        .unwrap_or_default();
+
+    let init_container_statuses = pod
+        .status
+        .as_ref()
+        .and_then(|s| s.init_container_statuses.as_ref())
+        .cloned()
+        .unwrap_or_default();
+
+    let all_statuses = init_container_statuses
+        .iter()
+        .chain(container_statuses.iter());
+
+    let containers = all_statuses
+        .map(|cs| {
+            let ready = if cs.ready { "1/1" } else { "0/1" }.to_string();
+            let container_status = if let Some(state) = &cs.state {
+                if state.running.is_some() {
+                    "Running".to_string()
+                } else if let Some(terminated) = &state.terminated {
+                    terminated
+                        .reason
+                        .clone()
+                        .unwrap_or_else(|| "Terminated".to_string())
+                } else if let Some(waiting) = &state.waiting {
+                    waiting
+                        .reason
+                        .clone()
+                        .unwrap_or_else(|| "Waiting".to_string())
+                } else {
+                    "Unknown".to_string()
+                }
+            } else {
+                "Unknown".to_string()
+            };
+            PodDetails {
+                name: cs.name.clone(),
+                age: None,
+                containers: ready,
+                restarts: cs.restart_count,
+                status: container_status,
+            }
+        })
+        .collect();
+
+    WorkloadDetails {
+        name: pod.name_any(),
+        kind: "Pod".to_string(),
+        namespace,
+        age: age_for(&pod),
+        ready: None,
+        status: status.to_string(),
+        images: Vec::new(),
+        resource_totals: ResourceTotals::default(),
+        labels: key_values(labels),
+        annotations: key_values(annotations),
+        pods: containers,
+        services: Vec::new(),
+    }
 }
 
 fn generic_details<K>(
