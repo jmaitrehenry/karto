@@ -738,6 +738,7 @@ export function App() {
                 onClick={() => {
                   setSelectedNamespace("");
                   setSelectedCrd(null);
+                  setSelectedResource(null);
                 }}
                 type="button"
               >
@@ -753,6 +754,7 @@ export function App() {
                   onClick={() => {
                     setSelectedNamespace(namespace.name);
                     setSelectedCrd(null);
+                    setSelectedResource(null);
                   }}
                   type="button"
                 >
@@ -1345,7 +1347,7 @@ function WorkloadDetailsView({
         <h2>Details</h2>
         <div className="metadata-grid">
           <MetadataList title="Labels" values={workload.labels} />
-          <MetadataList title="Annotations" values={workload.annotations} />
+          <MetadataList title="Annotations" values={workload.annotations.filter(a => a.key !== "kubectl.kubernetes.io/last-applied-configuration")} />
         </div>
       </section>
 
