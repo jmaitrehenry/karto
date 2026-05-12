@@ -1463,7 +1463,182 @@ function EventsView({ events }: { events: LoadState<EventSummary[]> }) {
   );
 }
 
+function yamlLineIndent(line: string): number {
+  if (line.trim() === "") return -1;
+  return line.length - line.trimStart().length;
+}
+
+function findCollapsibleLines(lines: string[]): Set<number> {
+  const indents = lines.map(yamlLineIndent);
+  const collapsible = new Set<number>();
+  for (let i = 0; i < lines.length; i++) {
+    if (indents[i] === -1) continue;
+    const trimmed = lines[i].trim();
+    for (let j = i + 1; j < lines.length; j++) {
+      if (indents[j] === -1) continue;
+      if (indents[j] > indents[i]) {
+        collapsible.add(i);
+      } else if (
+        indents[j] === indents[i] &&
+        trimmed.endsWith(":") &&
+        lines[j].trim().startsWith("- ")
+      ) {
+        // Compact YAML: array items at same indent level as their key
+        collapsible.add(i);
+      }
+      break;
+    }
+  }
+  return collapsible;
+}
+
+function findDefaultCollapsed(lines: string[]): Set<number> {
+  const collapsed = new Set<number>();
+  lines.forEach((line, i) => {
+    if (/^\s*managedFields\s*:/.test(line)) collapsed.add(i);
+  });
+  return collapsed;
+}
+
+function nextNonEmptyIndent(indents: number[], from: number): { idx: number; indent: number } | null {
+  for (let k = from; k < indents.length; k++) {
+    if (indents[k] !== -1) return { idx: k, indent: indents[k] };
+  }
+  return null;
+}
+
+function getSkippedLines(lines: string[], collapsedLines: Set<number>): Set<number> {
+  const indents = lines.map(yamlLineIndent);
+  const toSkip = new Set<number>();
+
+  for (const lineIdx of collapsedLines) {
+    const baseIndent = indents[lineIdx];
+    if (baseIndent === -1) continue;
+
+    // Detect compact array: key at indent N followed by "- " items at indent N
+    const firstChild = nextNonEmptyIndent(indents, lineIdx + 1);
+    const isSameLevelArray =
+      firstChild !== null &&
+      firstChild.indent === baseIndent &&
+      lines[firstChild.idx].trim().startsWith("- ");
+
+    let j = lineIdx + 1;
+    while (j < lines.length) {
+      const indent = indents[j];
+
+      if (indent === -1) {
+        // Skip empty lines only if next non-empty is still inside the section
+        const next = nextNonEmptyIndent(indents, j + 1);
+        if (
+          next !== null &&
+          (next.indent > baseIndent ||
+            (isSameLevelArray && next.indent === baseIndent && lines[next.idx].trim().startsWith("- ")))
+        ) {
+          toSkip.add(j);
+          j++;
+        } else {
+          break;
+        }
+      } else if (indent > baseIndent) {
+        toSkip.add(j);
+        j++;
+      } else if (isSameLevelArray && indent === baseIndent && lines[j].trim().startsWith("- ")) {
+        // Same-level array item
+        toSkip.add(j);
+        j++;
+      } else {
+        break;
+      }
+    }
+  }
+  return toSkip;
+}
+
+function highlightYamlValue(value: string): React.ReactNode {
+  if (!value) return null;
+  if (value === "null" || value === "~") return <span className="yaml-null">{value}</span>;
+  if (value === "true" || value === "false") return <span className="yaml-bool">{value}</span>;
+  if (/^-?\d+(\.\d+)?$/.test(value)) return <span className="yaml-number">{value}</span>;
+  if (value === "|" || value === ">" || value === "|-" || value === ">-" || value === "|+" || value === ">+")
+    return <span className="yaml-string">{value}</span>;
+  if (value.startsWith('"') || value.startsWith("'")) return <span className="yaml-string">{value}</span>;
+  return <span className="yaml-value">{value}</span>;
+}
+
+function highlightYamlLine(line: string): React.ReactNode {
+  if (line.trim() === "") return <span>{line}</span>;
+  const trimmed = line.trim();
+  const indent = line.length - line.trimStart().length;
+  const indentStr = line.substring(0, indent);
+
+  if (trimmed.startsWith("#")) return <span className="yaml-comment">{line}</span>;
+
+  // Array item: "- key: value" or "- value"
+  if (trimmed.startsWith("- ")) {
+    const afterDash = trimmed.substring(2);
+    const sep = afterDash.indexOf(": ");
+    if (sep !== -1) {
+      const key = afterDash.substring(0, sep);
+      const value = afterDash.substring(sep + 2);
+      return <>
+        <span>{indentStr}</span>
+        <span className="yaml-punctuation">{"- "}</span>
+        <span className="yaml-key">{key}</span>
+        <span className="yaml-punctuation">{": "}</span>
+        {highlightYamlValue(value)}
+      </>;
+    }
+    return <>
+      <span>{indentStr}</span>
+      <span className="yaml-punctuation">{"- "}</span>
+      {highlightYamlValue(afterDash)}
+    </>;
+  }
+
+  // key: value  or  key:
+  const sep = trimmed.indexOf(": ");
+  if (sep !== -1) {
+    const key = trimmed.substring(0, sep);
+    const value = trimmed.substring(sep + 2);
+    return <>
+      <span>{indentStr}</span>
+      <span className="yaml-key">{key}</span>
+      <span className="yaml-punctuation">{": "}</span>
+      {highlightYamlValue(value)}
+    </>;
+  }
+  if (trimmed.endsWith(":")) {
+    const key = trimmed.substring(0, trimmed.length - 1);
+    return <>
+      <span>{indentStr}</span>
+      <span className="yaml-key">{key}</span>
+      <span className="yaml-punctuation">{":"}</span>
+    </>;
+  }
+
+  return <span>{line}</span>;
+}
+
 function YamlView({ yaml }: { yaml: LoadState<string> }) {
+  const [collapsedLines, setCollapsedLines] = useState<Set<number>>(new Set());
+
+  const lines = useMemo(() => yaml.data?.split("\n") ?? [], [yaml.data]);
+  const collapsible = useMemo(() => findCollapsibleLines(lines), [lines]);
+  const skipped = useMemo(() => getSkippedLines(lines, collapsedLines), [lines, collapsedLines]);
+
+  useEffect(() => {
+    setCollapsedLines(findDefaultCollapsed(lines));
+  }, [yaml.data]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const toggleLine = (i: number) => {
+    setCollapsedLines((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
+  };
+
   if (yaml.status === "loading" && !yaml.data) {
     return (
       <div className="table-placeholder">
@@ -1483,10 +1658,41 @@ function YamlView({ yaml }: { yaml: LoadState<string> }) {
     );
   }
 
+  if (!yaml.data) {
+    return (
+      <div className="yaml-panel">
+        <span className="yaml-value">No YAML loaded.</span>
+      </div>
+    );
+  }
+
   return (
-    <pre className="yaml-panel" aria-label="Read-only Kubernetes YAML">
-      {yaml.data || "No YAML loaded."}
-    </pre>
+    <div className="yaml-panel" aria-label="Read-only Kubernetes YAML">
+      {lines.map((line, i) => {
+        if (skipped.has(i)) return null;
+        const isCollapsible = collapsible.has(i);
+        const isCollapsed = collapsedLines.has(i);
+        return (
+          <div key={i} className="yaml-line">
+            <span className="yaml-gutter">
+              {isCollapsible && (
+                <button
+                  className="yaml-toggle"
+                  onClick={() => toggleLine(i)}
+                  aria-label={isCollapsed ? "Expand section" : "Collapse section"}
+                >
+                  {isCollapsed ? <ChevronRight size={9} /> : <ChevronDown size={9} />}
+                </button>
+              )}
+            </span>
+            <span className="yaml-line-text">
+              {highlightYamlLine(line)}
+              {isCollapsed && <span className="yaml-ellipsis"> …</span>}
+            </span>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
