@@ -891,6 +891,41 @@ select {
   color: var(--yellow);
 }
 
+.warnings-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.warning-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgb(var(--text-rgb) / 0.055);
+  font-size: 12px;
+}
+
+.warning-icon {
+  flex-shrink: 0;
+  color: var(--yellow);
+}
+
+.warning-container {
+  font-weight: 650;
+  color: var(--subtext-1);
+  min-width: 0;
+}
+
+.warning-message {
+  color: var(--overlay-1);
+  min-width: 0;
+}
+
 .events-view {
   padding-top: 8px;
 }

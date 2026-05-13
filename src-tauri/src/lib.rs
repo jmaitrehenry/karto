@@ -61,6 +61,7 @@ struct WorkloadDetails {
     annotations: Vec<KeyValue>,
     pods: Vec<PodDetails>,
     services: Vec<ServiceDetails>,
+    config_warnings: Vec<ConfigWarning>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -69,6 +70,12 @@ struct ResourceTotals {
     cpu_limited: String,
     memory_requested: String,
     memory_limited: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ConfigWarning {
+    container: String,
+    message: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -475,6 +482,7 @@ async fn get_custom_resource_details(
         annotations: key_values(annotations),
         pods: Vec::new(),
         services: Vec::new(),
+        config_warnings: Vec::new(),
     })
 }
 
@@ -943,6 +951,12 @@ async fn workload_details_from_deployment(
         .and_then(|spec| spec.template.spec.as_ref())
         .map(resource_totals)
         .unwrap_or_default();
+    let config_warnings = deployment
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.template.spec.as_ref())
+        .map(config_warnings_for)
+        .unwrap_or_default();
     let ready = deployment
         .status
         .as_ref()
@@ -972,6 +986,7 @@ async fn workload_details_from_deployment(
         annotations: key_values(annotations),
         pods: pods_for(client.clone(), &namespace, &selector).await?,
         services: services_for(client, &namespace, &template_labels).await?,
+        config_warnings,
     })
 }
 
@@ -1005,6 +1020,12 @@ async fn workload_details_from_stateful_set(
         .and_then(|spec| spec.template.spec.as_ref())
         .map(resource_totals)
         .unwrap_or_default();
+    let config_warnings = stateful_set
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.template.spec.as_ref())
+        .map(config_warnings_for)
+        .unwrap_or_default();
     let ready = stateful_set
         .status
         .as_ref()
@@ -1034,6 +1055,7 @@ async fn workload_details_from_stateful_set(
         annotations: key_values(annotations),
         pods: pods_for(client.clone(), &namespace, &selector).await?,
         services: services_for(client, &namespace, &template_labels).await?,
+        config_warnings,
     })
 }
 
@@ -1067,6 +1089,12 @@ async fn workload_details_from_daemon_set(
         .and_then(|spec| spec.template.spec.as_ref())
         .map(resource_totals)
         .unwrap_or_default();
+    let config_warnings = daemon_set
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.template.spec.as_ref())
+        .map(config_warnings_for)
+        .unwrap_or_default();
     let ready = daemon_set
         .status
         .as_ref()
@@ -1096,6 +1124,7 @@ async fn workload_details_from_daemon_set(
         annotations: key_values(annotations),
         pods: pods_for(client.clone(), &namespace, &selector).await?,
         services: services_for(client, &namespace, &template_labels).await?,
+        config_warnings,
     })
 }
 
@@ -1153,6 +1182,12 @@ fn pod_details(pod: Pod, namespace: String, status: &str) -> WorkloadDetails {
         })
         .collect();
 
+    let config_warnings = pod
+        .spec
+        .as_ref()
+        .map(config_warnings_for)
+        .unwrap_or_default();
+
     WorkloadDetails {
         name: pod.name_any(),
         kind: "Pod".to_string(),
@@ -1166,6 +1201,7 @@ fn pod_details(pod: Pod, namespace: String, status: &str) -> WorkloadDetails {
         annotations: key_values(annotations),
         pods: containers,
         services: Vec::new(),
+        config_warnings,
     }
 }
 
@@ -1195,6 +1231,7 @@ where
         annotations: key_values(annotations),
         pods: Vec::new(),
         services: Vec::new(),
+        config_warnings: Vec::new(),
     }
 }
 
@@ -1641,6 +1678,39 @@ fn resource_totals(pod_spec: &k8s_openapi::api::core::v1::PodSpec) -> ResourceTo
         memory_requested: format_memory(memory_requested),
         memory_limited: format_memory(memory_limited),
     }
+}
+
+fn config_warnings_for(pod_spec: &k8s_openapi::api::core::v1::PodSpec) -> Vec<ConfigWarning> {
+    pod_spec
+        .containers
+        .iter()
+        .flat_map(|container| {
+            let mut warnings = Vec::new();
+            match &container.resources {
+                None => {
+                    warnings.push(ConfigWarning {
+                        container: container.name.clone(),
+                        message: "No resource requests or limits set".to_string(),
+                    });
+                }
+                Some(resources) => {
+                    if resources.requests.is_none() {
+                        warnings.push(ConfigWarning {
+                            container: container.name.clone(),
+                            message: "No resource requests set".to_string(),
+                        });
+                    }
+                    if resources.limits.is_none() {
+                        warnings.push(ConfigWarning {
+                            container: container.name.clone(),
+                            message: "No resource limits set".to_string(),
+                        });
+                    }
+                }
+            }
+            warnings
+        })
+        .collect()
 }
 
 fn parse_cpu(value: &str) -> Option<f64> {
