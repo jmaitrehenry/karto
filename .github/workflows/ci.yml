@@ -143,16 +143,25 @@ jobs:
         if: runner.os == 'macOS'
         env:
           P12_BASE64: ${{ secrets.certificate }}
+          P8: ${{ secrets.APPSTORECONNECT_KEY }}
         run: |
           echo "$P12_BASE64" | base64 --decode > certificate.p12
+          echo "$P8" > .appstoreconnect_key.json
+
+      - name: Enable hardened runtime
+        if: runner.os == 'macOS'
+        run: |
+          codesign --deep -o runtime -s - src-tauri/target/release/bundle/macos/Karto.app
 
       - name: Sign a Mach-O binary
         if: runner.os == 'macOS'
         uses: indygreg/apple-code-sign-action@v1
         with:
           input_path: src-tauri/target/release/bundle/macos/Karto.app
+          notarize: true
           p12_file: certificate.p12
           p12_password: ${{ secrets.certificate_password }}
+          app_store_connect_api_key_json_file: .appstoreconnect_key.json
 
       - name: Zip macOS app bundle
         if: runner.os == 'macOS'
