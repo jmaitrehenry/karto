@@ -187,6 +187,11 @@ export function App() {
     status: "idle",
     data: emptyCustomResources
   });
+  const [selectedCustomResource, setSelectedCustomResource] = useState<{
+    crd: CrdResource;
+    name: string;
+    namespace: string;
+  } | null>(null);
   const [selectedResource, setSelectedResource] = useState<ResourceSummary | null>(
     null
   );
@@ -252,6 +257,7 @@ export function App() {
     setSelectedResource(null);
     setResourceHistory([]);
     setSelectedCrd(null);
+    setSelectedCustomResource(null);
     setDetails({ status: "idle", data: null });
     setActiveDetailTab("overview");
     setLogLines([]);
@@ -265,9 +271,21 @@ export function App() {
   }, [selectedResource]);
 
   useEffect(() => {
+    setActiveDetailTab("overview");
+    setDetails({ status: "idle", data: null });
+    setEvents({ status: "idle", data: [] });
+    setYaml({ status: "idle", data: "" });
+  }, [selectedCustomResource]);
+
+  useEffect(() => {
     if (!selectedContext || !selectedResourceNamespace || !selectedResource) return;
     void loadDetails(selectedContext, selectedResourceNamespace, selectedResource);
   }, [selectedContext, selectedResourceNamespace, selectedResource]);
+
+  useEffect(() => {
+    if (!selectedContext || !selectedCustomResource) return;
+    void loadCustomResourceDetails(selectedContext, selectedCustomResource.crd, selectedCustomResource.namespace, selectedCustomResource.name);
+  }, [selectedContext, selectedCustomResource]);
 
   useEffect(() => {
     if (
@@ -283,6 +301,15 @@ export function App() {
   }, [activeDetailTab, selectedContext, selectedResourceNamespace, selectedResource]);
 
   useEffect(() => {
+    if (!selectedContext || !selectedCustomResource || activeDetailTab !== "events") return;
+    void loadEvents(selectedContext, selectedCustomResource.namespace, {
+      name: selectedCustomResource.name,
+      kind: selectedCustomResource.crd.kind,
+      status: "Active"
+    });
+  }, [activeDetailTab, selectedContext, selectedCustomResource]);
+
+  useEffect(() => {
     if (
       !selectedContext ||
       !selectedResourceNamespace ||
@@ -294,6 +321,11 @@ export function App() {
 
     void loadYaml(selectedContext, selectedResourceNamespace, selectedResource);
   }, [activeDetailTab, selectedContext, selectedResourceNamespace, selectedResource]);
+
+  useEffect(() => {
+    if (!selectedContext || !selectedCustomResource || activeDetailTab !== "yaml") return;
+    void loadCustomResourceYaml(selectedContext, selectedCustomResource.crd, selectedCustomResource.namespace, selectedCustomResource.name);
+  }, [activeDetailTab, selectedContext, selectedCustomResource]);
 
   useEffect(() => {
     if (
@@ -497,6 +529,56 @@ export function App() {
       setCustomResources({
         status: "error",
         data: emptyCustomResources,
+        message: String(error)
+      });
+    }
+  }
+
+  async function loadCustomResourceDetails(
+    context: string,
+    crd: CrdResource,
+    namespace: string,
+    name: string
+  ) {
+    setDetails((current) => ({ status: "loading", data: current.data }));
+
+    try {
+      const nextDetails = await invoke<WorkloadDetails>("get_custom_resource_details", {
+        context,
+        resource: crd,
+        namespace,
+        name
+      });
+      setDetails({ status: "idle", data: nextDetails });
+    } catch (error) {
+      setDetails({
+        status: "error",
+        data: null,
+        message: String(error)
+      });
+    }
+  }
+
+  async function loadCustomResourceYaml(
+    context: string,
+    crd: CrdResource,
+    namespace: string,
+    name: string
+  ) {
+    setYaml((current) => ({ status: "loading", data: current.data }));
+
+    try {
+      const nextYaml = await invoke<string>("get_custom_resource_yaml", {
+        context,
+        resource: crd,
+        namespace,
+        name
+      });
+      setYaml({ status: "idle", data: nextYaml });
+    } catch (error) {
+      setYaml({
+        status: "error",
+        data: "",
         message: String(error)
       });
     }
@@ -834,7 +916,7 @@ export function App() {
           data-tauri-drag-region
           onMouseDown={startWindowDrag}
         >
-          {selectedResource ? (
+          {selectedResource || selectedCustomResource ? (
             <div aria-hidden="true" />
           ) : (
             <div className="crumb">
@@ -847,7 +929,7 @@ export function App() {
             </div>
           )}
 
-          {selectedResource ? (
+          {selectedResource || selectedCustomResource ? (
             <div
               className="segmented detail-tabs"
               onPointerDown={(event) => event.stopPropagation()}
@@ -860,7 +942,7 @@ export function App() {
               >
                 Overview
               </button>
-              {supportsLogs(selectedResource) ? (
+              {selectedResource && supportsLogs(selectedResource) ? (
                 <button
                   className={activeDetailTab === "logs" ? "active" : ""}
                   onClick={() => setActiveDetailTab("logs")}
@@ -941,7 +1023,7 @@ export function App() {
                 if (selectedContext) {
                   void loadResources(selectedContext, selectedNamespace);
                 }
-                if (selectedContext && selectedCrd) {
+                if (selectedContext && selectedCrd && !selectedCustomResource) {
                   void loadCustomResources(selectedContext, selectedCrd);
                 }
                 if (selectedContext && selectedResourceNamespace && selectedResource) {
@@ -953,6 +1035,19 @@ export function App() {
                     void loadYaml(selectedContext, selectedResourceNamespace, selectedResource);
                   }
                 }
+                if (selectedContext && selectedCustomResource) {
+                  void loadCustomResourceDetails(selectedContext, selectedCustomResource.crd, selectedCustomResource.namespace, selectedCustomResource.name);
+                  if (activeDetailTab === "events") {
+                    void loadEvents(selectedContext, selectedCustomResource.namespace, {
+                      name: selectedCustomResource.name,
+                      kind: selectedCustomResource.crd.kind,
+                      status: "Active"
+                    });
+                  }
+                  if (activeDetailTab === "yaml") {
+                    void loadCustomResourceYaml(selectedContext, selectedCustomResource.crd, selectedCustomResource.namespace, selectedCustomResource.name);
+                  }
+                }
               }}
               type="button"
             >
@@ -962,8 +1057,8 @@ export function App() {
           </div>
         </header>
 
-        <div className={selectedResource ? "subbar detail-subbar" : "subbar"}>
-          {selectedResource ? null : (
+        <div className={selectedResource || selectedCustomResource ? "subbar detail-subbar" : "subbar"}>
+          {selectedResource || selectedCustomResource ? null : (
             <div>
               <h1>
                 {selectedCrd?.kind ?? (selectedNamespace || "All namespaces")}
@@ -978,13 +1073,22 @@ export function App() {
             </div>
           )}
           {selectedResource ? (
-              <button
+            <button
               className="back-button"
               onClick={navigateBackFromResource}
               type="button"
             >
               <List size={15} />
               {resourceHistory.length > 0 ? "Back" : "Back to resources"}
+            </button>
+          ) : selectedCustomResource ? (
+            <button
+              className="back-button"
+              onClick={() => setSelectedCustomResource(null)}
+              type="button"
+            >
+              <List size={15} />
+              {`Back to ${selectedCustomResource.crd.kind}`}
             </button>
           ) : selectedCrd ? (
             <button
@@ -1019,8 +1123,22 @@ export function App() {
             title="Resources unavailable"
             detail={resources.message}
           />
+        ) : selectedCustomResource ? (
+          <WorkloadDetailsView
+            activeTab={activeDetailTab}
+            details={details}
+            events={events}
+            fallback={{ name: selectedCustomResource.name, kind: selectedCustomResource.crd.kind, namespace: selectedCustomResource.namespace, status: "Active" }}
+            logLines={[]}
+            logStatus={{ status: "idle", data: null }}
+            onOpenResource={(resource) => openResource(resource, true)}
+            yaml={yaml}
+          />
         ) : selectedCrd ? (
-          <CustomResourceTableView table={customResources} />
+          <CustomResourceTableView
+            onRowClick={(name, namespace) => setSelectedCustomResource({ crd: selectedCrd, name, namespace })}
+            table={customResources}
+          />
         ) : selectedResource ? (
           <WorkloadDetailsView
             activeTab={activeDetailTab}
@@ -1056,7 +1174,7 @@ function ResourceTable({
   resources: ResourceSummary[];
   showNamespace: boolean;
 }) {
-  if (loading && resources.length === 0) {
+  if (loading) {
     return (
       <div className="table-placeholder">
         <Loader2 className="spin" size={24} />
@@ -1121,8 +1239,10 @@ function ResourceTable({
 }
 
 function CustomResourceTableView({
+  onRowClick,
   table
 }: {
+  onRowClick: (name: string, namespace: string) => void;
   table: LoadState<CustomResourceTable>;
 }) {
   if (table.status === "loading" && table.data.rows.length === 0) {
@@ -1154,6 +1274,8 @@ function CustomResourceTableView({
     );
   }
 
+  const isNamespaced = table.data.columns[0] === "Namespace";
+
   return (
     <div className="resource-table-wrap custom-resource-table">
       <table className="resource-table">
@@ -1165,18 +1287,26 @@ function CustomResourceTableView({
           </tr>
         </thead>
         <tbody>
-          {table.data.rows.map((row, rowIndex) => (
-            <tr key={`${row.join("-")}-${rowIndex}`}>
-              {row.map((cell, cellIndex) => (
-                <td
-                  className={cellIndex === 1 ? "custom-resource-name" : ""}
-                  key={`${cell}-${cellIndex}`}
-                >
-                  {cell}
-                </td>
-              ))}
-            </tr>
-          ))}
+          {table.data.rows.map((row, rowIndex) => {
+            const namespace = isNamespaced ? row[0] : "";
+            const name = isNamespaced ? row[1] : row[0];
+            return (
+              <tr
+                className="clickable-row"
+                key={`${row.join("-")}-${rowIndex}`}
+                onClick={() => onRowClick(name, namespace)}
+              >
+                {row.map((cell, cellIndex) => (
+                  <td
+                    className={cellIndex === (isNamespaced ? 1 : 0) ? "custom-resource-name" : ""}
+                    key={`${cell}-${cellIndex}`}
+                  >
+                    {cell}
+                  </td>
+                ))}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
