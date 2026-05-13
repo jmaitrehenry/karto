@@ -139,6 +139,21 @@ jobs:
       - name: Build Tauri app
         run: npm run tauri:build
 
+      - name: Decode P12 Certificate
+        if: runner.os == 'macOS'
+        env:
+          P12_BASE64: ${{ secrets.certificate }}
+        run: |
+          echo "$P12_BASE64" | base64 --decode > certificate.p12
+
+      - name: Sign a Mach-O binary
+        if: runner.os == 'macOS'
+        uses: indygreg/apple-code-sign-action@v1
+        with:
+          input_path: src-tauri/target/release/bundle/macos/Karto.app
+          p12_file: certificate.p12
+          p12_password: ${{ secrets.certificate_password }}
+
       - name: Zip macOS app bundle
         if: runner.os == 'macOS'
         run: |
