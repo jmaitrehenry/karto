@@ -18,7 +18,8 @@ import {
   Server,
   ShieldCheck,
   Sun,
-  TerminalSquare
+  TerminalSquare,
+  TriangleAlert
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -73,6 +74,11 @@ type KeyValue = {
   value: string;
 };
 
+type ConfigWarning = {
+  container: string;
+  message: string;
+};
+
 type PodDetails = {
   name: string;
   age?: string;
@@ -105,6 +111,7 @@ type WorkloadDetails = {
   annotations: KeyValue[];
   pods: PodDetails[];
   services: ServiceDetails[];
+  config_warnings: ConfigWarning[];
 };
 
 type LogLine = {
@@ -1429,6 +1436,21 @@ function WorkloadDetailsView({
           ) : null}
         </div>
       </section>
+
+      {workload.config_warnings.length > 0 ? (
+        <section className="details-section">
+          <h2>Warnings</h2>
+          <ul className="warnings-list">
+            {workload.config_warnings.map((warning, i) => (
+              <li key={i} className="warning-item">
+                <TriangleAlert size={14} className="warning-icon" />
+                <span className="warning-container">{warning.container}</span>
+                <span className="warning-message">{warning.message}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       {isWorkload || hasPods ? (
         <section className="details-section">
