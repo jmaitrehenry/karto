@@ -439,6 +439,70 @@ async fn list_custom_resources(
 }
 
 #[tauri::command]
+async fn get_custom_resource_details(
+    context: String,
+    resource: CrdResource,
+    namespace: String,
+    name: String,
+) -> Result<WorkloadDetails, String> {
+    let client = client_for_context(&context).await?;
+    let api_resource = ApiResource {
+        group: resource.group.clone(),
+        version: resource.version.clone(),
+        api_version: format!("{}/{}", resource.group, resource.version),
+        kind: resource.kind.clone(),
+        plural: resource.plural.clone(),
+    };
+    let api: Api<DynamicObject> = if resource.scope == "Namespaced" && !namespace.is_empty() {
+        Api::namespaced_with(client, &namespace, &api_resource)
+    } else {
+        Api::all_with(client, &api_resource)
+    };
+    let object = api.get(&name).await.map_err(kube_error)?;
+    let labels = object.meta().labels.clone().unwrap_or_default();
+    let annotations = object.meta().annotations.clone().unwrap_or_default();
+
+    Ok(WorkloadDetails {
+        name: object.name_any(),
+        kind: resource.kind.clone(),
+        namespace,
+        age: age_for(&object),
+        ready: None,
+        status: "Active".to_string(),
+        images: Vec::new(),
+        resource_totals: ResourceTotals::default(),
+        labels: key_values(labels),
+        annotations: key_values(annotations),
+        pods: Vec::new(),
+        services: Vec::new(),
+    })
+}
+
+#[tauri::command]
+async fn get_custom_resource_yaml(
+    context: String,
+    resource: CrdResource,
+    namespace: String,
+    name: String,
+) -> Result<String, String> {
+    let client = client_for_context(&context).await?;
+    let api_resource = ApiResource {
+        group: resource.group.clone(),
+        version: resource.version.clone(),
+        api_version: format!("{}/{}", resource.group, resource.version),
+        kind: resource.kind.clone(),
+        plural: resource.plural.clone(),
+    };
+    let api: Api<DynamicObject> = if resource.scope == "Namespaced" && !namespace.is_empty() {
+        Api::namespaced_with(client, &namespace, &api_resource)
+    } else {
+        Api::all_with(client, &api_resource)
+    };
+    let object = api.get(&name).await.map_err(kube_error)?;
+    serde_yaml::to_string(&object).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn get_workload_details(
     context: String,
     namespace: String,
@@ -1829,6 +1893,8 @@ pub fn run() {
         .manage(LogStreams::default())
         .invoke_handler(tauri::generate_handler![
             check_context_connection,
+            get_custom_resource_details,
+            get_custom_resource_yaml,
             get_workload_details,
             get_workload_yaml,
             list_crds,
