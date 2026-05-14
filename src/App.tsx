@@ -1480,21 +1480,12 @@ function WorkloadDetailsView({
 
       <section className="details-section">
         <h2>Overview</h2>
-        <div className={hasResourceTotals ? "overview-grid" : "overview-grid single"}>
+        <div className={hasResourceTotals || workload.service_ports?.length > 0 ? "overview-grid" : "overview-grid single"}>
           <div className="info-card">
             <InfoRow label="Kind" value={workload.kind} />
             <InfoRow label="Namespace" value={workload.namespace} />
             <InfoRow label="Status" value={workload.status} />
             <InfoRow label="Age" value={workload.age ?? "-"} />
-            {workload.service_type ? (
-              <InfoRow label="Type" value={workload.service_type} />
-            ) : null}
-            {workload.cluster_ip ? (
-              <InfoRow label="Cluster IP" value={workload.cluster_ip} />
-            ) : null}
-            {workload.external_ips?.length > 0 ? (
-              <InfoRow label="External IP" value={workload.external_ips.join(", ")} />
-            ) : null}
             {workload.internal_traffic_policy ? (
               <InfoRow label="Internal Traffic Policy" value={workload.internal_traffic_policy} />
             ) : null}
@@ -1524,6 +1515,23 @@ function WorkloadDetailsView({
                 label="Memory Limit"
                 value={workload.resource_totals.memory_limited}
               />
+            </div>
+          ) : null}
+          {workload.service_ports?.length > 0 || workload.service_type ? (
+            <div className="info-card">
+              <div className="metrics-title">Ports</div>
+              {workload.service_type ? (
+                <InfoRow label="Type" value={workload.service_type} />
+              ) : null}
+              {workload.cluster_ip ? (
+                <InfoRow label="Cluster IP" value={workload.cluster_ip} />
+              ) : null}
+              {workload.external_ips?.length > 0 ? (
+                <InfoRow label="External IP" value={workload.external_ips.join(", ")} />
+              ) : null}
+              {workload.service_ports.map((p) => (
+                <InfoRow key={p.port} label={String(p.port)} value={p.display.split(" -> ")[1] ?? p.display} />
+              ))}
             </div>
           ) : null}
         </div>
@@ -1598,16 +1606,6 @@ function WorkloadDetailsView({
         </div>
       </section>
 
-      {workload.service_ports?.length > 0 ? (
-        <section className="details-section">
-          <h2>Ports</h2>
-          <DetailsTable
-            empty="No ports configured."
-            headers={["Port"]}
-            rows={workload.service_ports.map((p) => [p.display])}
-          />
-        </section>
-      ) : null}
 
 
       {isWorkload || hasServices ? (
