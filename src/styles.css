@@ -1203,6 +1203,13 @@ select {
   border-radius: 6px;
   color: var(--text);
   font-size: 13px;
+  box-sizing: border-box;
+}
+
+select.port-input {
+  appearance: auto;
+  height: 31px;
+  width: auto;
 }
 
 .port-input:focus {
