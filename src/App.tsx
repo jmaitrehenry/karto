@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
 import {
   Check,
   ChevronDown,
@@ -13,13 +16,15 @@ import {
   Layers3,
   Loader2,
   Moon,
+  Network,
   RefreshCw,
   Search,
   Server,
   ShieldCheck,
   Sun,
   TerminalSquare,
-  TriangleAlert
+  TriangleAlert,
+  X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -130,8 +135,16 @@ type EventSummary = {
   last_seen: string;
 };
 
-type DetailTab = "overview" | "logs" | "events" | "yaml";
+type DetailTab = "overview" | "logs" | "events" | "yaml" | "terminal" | "ports";
 type ThemeMode = "light" | "dark";
+
+type PortForwardInfo = {
+  id: string;
+  pod_name: string;
+  namespace: string;
+  local_port: number;
+  remote_port: number;
+};
 
 const themeStorageKey = "karto-theme";
 
@@ -972,6 +985,24 @@ export function App() {
               >
                 YAML
               </button>
+              {selectedResource?.kind === "Pod" ? (
+                <button
+                  className={activeDetailTab === "terminal" ? "active" : ""}
+                  onClick={() => setActiveDetailTab("terminal")}
+                  type="button"
+                >
+                  Terminal
+                </button>
+              ) : null}
+              {selectedResource?.kind === "Pod" ? (
+                <button
+                  className={activeDetailTab === "ports" ? "active" : ""}
+                  onClick={() => setActiveDetailTab("ports")}
+                  type="button"
+                >
+                  Ports
+                </button>
+              ) : null}
             </div>
           ) : selectedCrd ? (
             <div className="resource-count">
@@ -1133,6 +1164,7 @@ export function App() {
         ) : selectedCustomResource ? (
           <WorkloadDetailsView
             activeTab={activeDetailTab}
+            context={selectedContext}
             details={details}
             events={events}
             fallback={{ name: selectedCustomResource.name, kind: selectedCustomResource.crd.kind, namespace: selectedCustomResource.namespace, status: "Active" }}
@@ -1149,6 +1181,7 @@ export function App() {
         ) : selectedResource ? (
           <WorkloadDetailsView
             activeTab={activeDetailTab}
+            context={selectedContext}
             details={details}
             events={events}
             fallback={selectedResource}
@@ -1322,6 +1355,7 @@ function CustomResourceTableView({
 
 function WorkloadDetailsView({
   activeTab,
+  context,
   details,
   events,
   fallback,
@@ -1331,6 +1365,7 @@ function WorkloadDetailsView({
   yaml
 }: {
   activeTab: DetailTab;
+  context: string;
   details: LoadState<WorkloadDetails | null>;
   events: LoadState<EventSummary[]>;
   fallback: ResourceSummary;
@@ -1372,6 +1407,29 @@ function WorkloadDetailsView({
 
   if (activeTab === "yaml") {
     return <YamlView yaml={yaml} />;
+  }
+
+  if (activeTab === "terminal" && fallback.kind === "Pod") {
+    const containerNames = workload.pods.map((p) => p.name);
+    return (
+      <TerminalView
+        key={`${context}-${workload.namespace}-${workload.name}`}
+        context={context}
+        namespace={workload.namespace}
+        podName={workload.name}
+        containers={containerNames}
+      />
+    );
+  }
+
+  if (activeTab === "ports" && fallback.kind === "Pod") {
+    return (
+      <PortForwardView
+        context={context}
+        namespace={workload.namespace}
+        podName={workload.name}
+      />
+    );
   }
 
   const hasImages = workload.images.length > 0;
@@ -1846,6 +1904,331 @@ function YamlView({ yaml }: { yaml: LoadState<string> }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function TerminalView({
+  context,
+  namespace,
+  podName,
+  containers
+}: {
+  context: string;
+  namespace: string;
+  podName: string;
+  containers: string[];
+}) {
+  const termRef = useRef<HTMLDivElement>(null);
+  const xtermRef = useRef<Terminal | null>(null);
+  const fitAddonRef = useRef<FitAddon | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
+  const [selectedContainer, setSelectedContainer] = useState(containers[0] ?? "");
+  const [status, setStatus] = useState<"connecting" | "connected" | "ended" | "error">("connecting");
+  const [errorMsg, setErrorMsg] = useState("");
+
+  useEffect(() => {
+    const el = termRef.current;
+    if (!el) return;
+
+    const isDark = document.documentElement.dataset.theme !== "light";
+    const term = new Terminal({
+      cursorBlink: true,
+      fontFamily: "monospace",
+      fontSize: 13,
+      theme: isDark
+        ? {
+            background: "#232634",
+            foreground: "#c6d0f5",
+            cursor: "#f2d5cf",
+            selectionBackground: "#51576d",
+            black: "#51576d",
+            red: "#e78284",
+            green: "#a6d189",
+            yellow: "#e5c890",
+            blue: "#8caaee",
+            magenta: "#ca9ee6",
+            cyan: "#85c1dc",
+            white: "#b5bfe2",
+            brightBlack: "#626880",
+            brightRed: "#e78284",
+            brightGreen: "#a6d189",
+            brightYellow: "#e5c890",
+            brightBlue: "#8caaee",
+            brightMagenta: "#ca9ee6",
+            brightCyan: "#85c1dc",
+            brightWhite: "#a5adce",
+          }
+        : {
+            background: "#dce0e8",
+            foreground: "#4c4f69",
+            cursor: "#dc8a78",
+            selectionBackground: "#bcc0cc",
+            black: "#5c5f77",
+            red: "#d20f39",
+            green: "#40a02b",
+            yellow: "#df8e1d",
+            blue: "#1e66f5",
+            magenta: "#8839ef",
+            cyan: "#209fb5",
+            white: "#6c6f85",
+          },
+    });
+    const fitAddon = new FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(el);
+    fitAddon.fit();
+    xtermRef.current = term;
+    fitAddonRef.current = fitAddon;
+
+    let sessionId: string | null = null;
+    let mounted = true;
+    let unlistenOutput: (() => void) | null = null;
+    let unlistenEnded: (() => void) | null = null;
+
+    async function startSession() {
+      try {
+        const sid = await invoke<string>("start_exec_session", {
+          context,
+          namespace,
+          podName,
+          container: selectedContainer || null,
+        });
+        if (!mounted) {
+          void invoke("stop_exec_session", { sessionId: sid });
+          return;
+        }
+        sessionId = sid;
+        sessionIdRef.current = sid;
+
+        unlistenOutput = await listen<string>(`exec-output-${sid}`, (event) => {
+          if (!mounted) return;
+          term.write(event.payload);
+          setStatus("connected");
+        });
+
+        unlistenEnded = await listen(`exec-ended-${sid}`, () => {
+          if (!mounted) return;
+          setStatus("ended");
+          term.writeln("\r\n\r\n[Session ended]");
+        });
+
+        // Send resize immediately
+        const dims = fitAddon.proposeDimensions();
+        if (dims) {
+          void invoke("resize_exec", { sessionId: sid, rows: dims.rows, cols: dims.cols });
+        }
+      } catch (e) {
+        if (!mounted) return;
+        setStatus("error");
+        setErrorMsg(String(e));
+      }
+    }
+
+    void startSession();
+
+    term.onData((data) => {
+      if (sessionId) {
+        void invoke("send_exec_input", { sessionId, data });
+      }
+    });
+
+    const resizeObserver = new ResizeObserver(() => {
+      if (!fitAddonRef.current || !sessionIdRef.current) return;
+      fitAddonRef.current.fit();
+      const dims = fitAddonRef.current.proposeDimensions();
+      if (dims) {
+        void invoke("resize_exec", { sessionId: sessionIdRef.current, rows: dims.rows, cols: dims.cols });
+      }
+    });
+    resizeObserver.observe(el);
+
+    return () => {
+      mounted = false;
+      resizeObserver.disconnect();
+      if (sessionId) void invoke("stop_exec_session", { sessionId });
+      unlistenOutput?.();
+      unlistenEnded?.();
+      term.dispose();
+    };
+  }, [context, namespace, podName, selectedContainer]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <div className="terminal-view">
+      <div className="terminal-toolbar">
+        <TerminalSquare size={14} />
+        <span>{podName}</span>
+        {containers.length > 1 ? (
+          <select
+            className="terminal-container-select"
+            value={selectedContainer}
+            onChange={(e) => setSelectedContainer(e.target.value)}
+          >
+            {containers.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="terminal-container-name">{selectedContainer}</span>
+        )}
+        <span className={`terminal-status ${status}`}>
+          {status === "connecting" && <Loader2 className="spin" size={12} />}
+          {status === "connecting" ? "Connecting…" : status === "connected" ? "Connected" : status === "ended" ? "Ended" : "Error"}
+        </span>
+      </div>
+      {status === "error" ? (
+        <div className="terminal-error">{errorMsg}</div>
+      ) : null}
+      <div className="terminal-container" ref={termRef} />
+    </div>
+  );
+}
+
+function PortForwardView({
+  context,
+  namespace,
+  podName
+}: {
+  context: string;
+  namespace: string;
+  podName: string;
+}) {
+  const [remotePort, setRemotePort] = useState("");
+  const [localPort, setLocalPort] = useState("");
+  const [forwards, setForwards] = useState<PortForwardInfo[]>([]);
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState("");
+
+  async function refreshForwards() {
+    try {
+      const list = await invoke<PortForwardInfo[]>("list_port_forwards");
+      setForwards(list.filter((f) => f.pod_name === podName && f.namespace === namespace));
+    } catch {
+      // ignore
+    }
+  }
+
+  useEffect(() => {
+    void refreshForwards();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function startForward(event: React.FormEvent) {
+    event.preventDefault();
+    setError("");
+    const rp = parseInt(remotePort, 10);
+    if (!rp || rp < 1 || rp > 65535) {
+      setError("Enter a valid remote port (1–65535).");
+      return;
+    }
+    const lp = localPort ? parseInt(localPort, 10) : undefined;
+    if (lp !== undefined && (lp < 1 || lp > 65535)) {
+      setError("Local port must be 1–65535 if specified.");
+      return;
+    }
+    setStarting(true);
+    try {
+      await invoke<PortForwardInfo>("start_port_forward", {
+        context,
+        namespace,
+        podName,
+        remotePort: rp,
+        localPort: lp ?? null,
+      });
+      setRemotePort("");
+      setLocalPort("");
+      await refreshForwards();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  async function stopForward(id: string) {
+    try {
+      await invoke("stop_port_forward", { id });
+      await refreshForwards();
+    } catch {
+      // ignore
+    }
+  }
+
+  return (
+    <div className="port-forward-view">
+      <div className="port-forward-header">
+        <Network size={15} />
+        <span>Port Forwards — {podName}</span>
+      </div>
+
+      <form className="port-forward-form" onSubmit={(e) => { void startForward(e); }}>
+        <label>
+          <span>Remote port</span>
+          <input
+            className="port-input"
+            inputMode="numeric"
+            onChange={(e) => setRemotePort(e.target.value)}
+            placeholder="e.g. 8080"
+            value={remotePort}
+          />
+        </label>
+        <label>
+          <span>Local port</span>
+          <input
+            className="port-input"
+            inputMode="numeric"
+            onChange={(e) => setLocalPort(e.target.value)}
+            placeholder="auto"
+            value={localPort}
+          />
+        </label>
+        <button className="port-forward-start" disabled={starting} type="submit">
+          {starting ? <Loader2 className="spin" size={14} /> : null}
+          Start
+        </button>
+      </form>
+
+      {error ? <p className="port-forward-error">{error}</p> : null}
+
+      {forwards.length === 0 ? (
+        <div className="port-forward-empty">
+          <Network size={24} />
+          <p>No active port forwards for this pod.</p>
+        </div>
+      ) : (
+        <table className="details-table port-forward-table">
+          <thead>
+            <tr>
+              <th>Local port</th>
+              <th>Remote port</th>
+              <th>Address</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {forwards.map((f) => (
+              <tr key={f.id}>
+                <td>{f.local_port}</td>
+                <td>{f.remote_port}</td>
+                <td>
+                  <code>127.0.0.1:{f.local_port}</code>
+                </td>
+                <td>
+                  <button
+                    className="port-forward-stop"
+                    onClick={() => { void stopForward(f.id); }}
+                    title="Stop port forward"
+                    type="button"
+                  >
+                    <X size={14} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
