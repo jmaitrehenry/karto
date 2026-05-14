@@ -1157,6 +1157,7 @@ export function App() {
           )}
         </div>
 
+        <div className="content-body">
         {contexts.status === "error" ? (
           <EmptyState
             icon={<TerminalSquare size={28} />}
@@ -1206,6 +1207,7 @@ export function App() {
             showNamespace={!selectedNamespace}
           />
         )}
+        </div>
       </section>
     </main>
   );
@@ -1880,6 +1882,9 @@ function highlightYamlLine(line: string): React.ReactNode {
 
 function YamlView({ yaml }: { yaml: LoadState<string> }) {
   const [collapsedLines, setCollapsedLines] = useState<Set<number>>(new Set());
+  const [fontSize, setFontSize] = useState(11);
+  const decreaseFontSize = () => setFontSize((s) => Math.max(8, s - 1));
+  const increaseFontSize = () => setFontSize((s) => Math.min(20, s + 1));
 
   const lines = useMemo(() => yaml.data?.split("\n") ?? [], [yaml.data]);
   const collapsible = useMemo(() => findCollapsibleLines(lines), [lines]);
@@ -1926,7 +1931,13 @@ function YamlView({ yaml }: { yaml: LoadState<string> }) {
   }
 
   return (
-    <div className="yaml-panel" aria-label="Read-only Kubernetes YAML">
+    <>
+      <div className="yaml-toolbar">
+        <button className="yaml-font-btn" onClick={decreaseFontSize} aria-label="Decrease font size" disabled={fontSize <= 8}>−</button>
+        <span className="yaml-font-size">{fontSize}px</span>
+        <button className="yaml-font-btn" onClick={increaseFontSize} aria-label="Increase font size" disabled={fontSize >= 20}>+</button>
+      </div>
+      <div className="yaml-panel" aria-label="Read-only Kubernetes YAML" style={{ fontSize }}>
       {lines.map((line, i) => {
         if (skipped.has(i)) return null;
         const isCollapsible = collapsible.has(i);
@@ -1952,6 +1963,7 @@ function YamlView({ yaml }: { yaml: LoadState<string> }) {
         );
       })}
     </div>
+    </>
   );
 }
 
