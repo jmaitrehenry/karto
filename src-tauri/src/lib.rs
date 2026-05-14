@@ -1,4 +1,4 @@
-use futures_util::{io::AsyncBufReadExt, StreamExt};
+use futures_util::{io::AsyncBufReadExt, SinkExt, StreamExt};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use k8s_openapi::{
     api::{
@@ -12,7 +12,7 @@ use k8s_openapi::{
     apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition,
 };
 use kube::{
-    api::{Api, ApiResource, DynamicObject, ListParams, LogParams, ResourceExt},
+    api::{Api, ApiResource, AttachParams, DynamicObject, ListParams, LogParams, ResourceExt, TerminalSize},
     config::{KubeConfigOptions, Kubeconfig},
     Client, Config, Resource,
 };
@@ -24,6 +24,8 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 use tauri::{AppHandle, Emitter, State};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::mpsc;
 
 #[derive(Debug, Serialize)]
 struct ClusterContext {
@@ -151,6 +153,35 @@ struct CustomResourceTable {
 
 #[derive(Default)]
 struct LogStreams(Mutex<HashMap<String, Vec<tauri::async_runtime::JoinHandle<()>>>>);
+
+#[derive(Debug, Serialize)]
+struct PortForwardInfo {
+    id: String,
+    pod_name: String,
+    namespace: String,
+    local_port: u16,
+    remote_port: u16,
+}
+
+struct PortForwardHandle {
+    local_port: u16,
+    pod_name: String,
+    namespace: String,
+    remote_port: u16,
+    task: tauri::async_runtime::JoinHandle<()>,
+}
+
+#[derive(Default)]
+struct PortForwards(Mutex<HashMap<String, PortForwardHandle>>);
+
+struct ExecHandle {
+    stdin_tx: mpsc::Sender<String>,
+    resize_tx: mpsc::Sender<(u16, u16)>,
+    task: tauri::async_runtime::JoinHandle<()>,
+}
+
+#[derive(Default)]
+struct ExecSessions(Mutex<HashMap<String, ExecHandle>>);
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1374,6 +1405,308 @@ async fn workload_selector(
     }
 }
 
+#[tauri::command]
+async fn start_port_forward(
+    port_forwards: State<'_, PortForwards>,
+    context: String,
+    namespace: String,
+    pod_name: String,
+    remote_port: u16,
+    local_port: Option<u16>,
+) -> Result<PortForwardInfo, String> {
+    let client = client_for_context(&context).await?;
+    let bind_addr = format!("127.0.0.1:{}", local_port.unwrap_or(0));
+    let listener = tokio::net::TcpListener::bind(&bind_addr)
+        .await
+        .map_err(|e| format!("Failed to bind local port: {}", e))?;
+    let actual_port = listener
+        .local_addr()
+        .map_err(|e| e.to_string())?
+        .port();
+
+    let id = format!(
+        "{}-{}-{}-{}",
+        namespace,
+        pod_name,
+        remote_port,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    );
+
+    let ns = namespace.clone();
+    let pn = pod_name.clone();
+    let task = tauri::async_runtime::spawn(async move {
+        let pods: Api<Pod> = Api::namespaced(client, &ns);
+        loop {
+            let Ok((mut tcp_stream, _)) = listener.accept().await else {
+                break;
+            };
+            let pods = pods.clone();
+            let pn = pn.clone();
+            tauri::async_runtime::spawn(async move {
+                let Ok(mut pf) = pods.portforward(&pn, &[remote_port]).await else {
+                    return;
+                };
+                let Some(mut kube_stream) = pf.take_stream(remote_port) else {
+                    return;
+                };
+                let _ = tokio::io::copy_bidirectional(&mut tcp_stream, &mut kube_stream).await;
+                drop(pf);
+            });
+        }
+    });
+
+    let info = PortForwardInfo {
+        id: id.clone(),
+        pod_name: pod_name.clone(),
+        namespace: namespace.clone(),
+        local_port: actual_port,
+        remote_port,
+    };
+
+    port_forwards
+        .0
+        .lock()
+        .map_err(|_| "Lock failed".to_string())?
+        .insert(
+            id,
+            PortForwardHandle {
+                local_port: actual_port,
+                pod_name,
+                namespace,
+                remote_port,
+                task,
+            },
+        );
+
+    Ok(info)
+}
+
+#[tauri::command]
+fn stop_port_forward(
+    port_forwards: State<'_, PortForwards>,
+    id: String,
+) -> Result<(), String> {
+    let Ok(mut forwards) = port_forwards.0.lock() else {
+        return Ok(());
+    };
+    if let Some(handle) = forwards.remove(&id) {
+        handle.task.abort();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn list_port_forwards(
+    port_forwards: State<'_, PortForwards>,
+) -> Result<Vec<PortForwardInfo>, String> {
+    let forwards = port_forwards
+        .0
+        .lock()
+        .map_err(|_| "Lock failed".to_string())?;
+    let mut list: Vec<PortForwardInfo> = forwards
+        .iter()
+        .map(|(id, h)| PortForwardInfo {
+            id: id.clone(),
+            pod_name: h.pod_name.clone(),
+            namespace: h.namespace.clone(),
+            local_port: h.local_port,
+            remote_port: h.remote_port,
+        })
+        .collect();
+    list.sort_by(|a, b| a.local_port.cmp(&b.local_port));
+    Ok(list)
+}
+
+#[tauri::command]
+async fn start_exec_session(
+    app: AppHandle,
+    exec_sessions: State<'_, ExecSessions>,
+    context: String,
+    namespace: String,
+    pod_name: String,
+    container: Option<String>,
+) -> Result<String, String> {
+    let client = client_for_context(&context).await?;
+    let session_id = format!(
+        "{}-{}-{}",
+        namespace,
+        pod_name,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    );
+
+    let (stdin_tx, stdin_rx) = mpsc::channel::<String>(64);
+    let (resize_tx, resize_rx) = mpsc::channel::<(u16, u16)>(8);
+
+    let sid = session_id.clone();
+    let task = tauri::async_runtime::spawn(async move {
+        run_exec_session(app, client, namespace, pod_name, container, sid, stdin_rx, resize_rx).await;
+    });
+
+    exec_sessions
+        .0
+        .lock()
+        .map_err(|_| "Lock failed".to_string())?
+        .insert(
+            session_id.clone(),
+            ExecHandle {
+                stdin_tx,
+                resize_tx,
+                task,
+            },
+        );
+
+    Ok(session_id)
+}
+
+async fn run_exec_session(
+    app: AppHandle,
+    client: Client,
+    namespace: String,
+    pod_name: String,
+    container: Option<String>,
+    session_id: String,
+    mut stdin_rx: mpsc::Receiver<String>,
+    mut resize_rx: mpsc::Receiver<(u16, u16)>,
+) {
+    let pods: Api<Pod> = Api::namespaced(client, &namespace);
+    let mut ap = AttachParams::interactive_tty();
+    if let Some(c) = container {
+        ap = ap.container(c);
+    }
+
+    let mut attached = match pods.exec(&pod_name, vec!["/bin/sh"], &ap).await {
+        Ok(a) => a,
+        Err(e) => {
+            let _ = app.emit(
+                &format!("exec-output-{}", session_id),
+                format!("\r\nError starting exec: {}\r\n", e),
+            );
+            let _ = app.emit(&format!("exec-ended-{}", session_id), ());
+            return;
+        }
+    };
+
+    let mut stdin = match attached.stdin() {
+        Some(s) => s,
+        None => {
+            let _ = app.emit(
+                &format!("exec-output-{}", session_id),
+                "\r\nFailed to open stdin\r\n".to_string(),
+            );
+            let _ = app.emit(&format!("exec-ended-{}", session_id), ());
+            return;
+        }
+    };
+    let mut stdout = match attached.stdout() {
+        Some(s) => s,
+        None => {
+            let _ = app.emit(
+                &format!("exec-output-{}", session_id),
+                "\r\nFailed to open stdout\r\n".to_string(),
+            );
+            let _ = app.emit(&format!("exec-ended-{}", session_id), ());
+            return;
+        }
+    };
+    let mut resize_sink = attached.terminal_size();
+
+    // Forward stdin from frontend to pod
+    let stdin_task = tauri::async_runtime::spawn(async move {
+        while let Some(data) = stdin_rx.recv().await {
+            if stdin.write_all(data.as_bytes()).await.is_err() {
+                break;
+            }
+            let _ = stdin.flush().await;
+        }
+    });
+
+    // Forward resize events
+    let resize_task = tauri::async_runtime::spawn(async move {
+        while let Some((rows, cols)) = resize_rx.recv().await {
+            if let Some(ref mut sink) = resize_sink {
+                if sink.send(TerminalSize { width: cols, height: rows }).await.is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
+    // Stream stdout to frontend
+    let mut buf = vec![0u8; 4096];
+    loop {
+        match stdout.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                let _ = app.emit(&format!("exec-output-{}", session_id), data);
+            }
+        }
+    }
+
+    stdin_task.abort();
+    resize_task.abort();
+    let _ = app.emit(&format!("exec-ended-{}", session_id), ());
+}
+
+#[tauri::command]
+async fn send_exec_input(
+    exec_sessions: State<'_, ExecSessions>,
+    session_id: String,
+    data: String,
+) -> Result<(), String> {
+    let tx = exec_sessions
+        .0
+        .lock()
+        .map_err(|_| "Lock failed".to_string())?
+        .get(&session_id)
+        .map(|h| h.stdin_tx.clone());
+
+    if let Some(tx) = tx {
+        tx.send(data).await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn resize_exec(
+    exec_sessions: State<'_, ExecSessions>,
+    session_id: String,
+    rows: u16,
+    cols: u16,
+) -> Result<(), String> {
+    let tx = exec_sessions
+        .0
+        .lock()
+        .map_err(|_| "Lock failed".to_string())?
+        .get(&session_id)
+        .map(|h| h.resize_tx.clone());
+
+    if let Some(tx) = tx {
+        tx.send((rows, cols)).await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_exec_session(
+    exec_sessions: State<'_, ExecSessions>,
+    session_id: String,
+) -> Result<(), String> {
+    let Ok(mut sessions) = exec_sessions.0.lock() else {
+        return Ok(());
+    };
+    if let Some(handle) = sessions.remove(&session_id) {
+        handle.task.abort();
+    }
+    Ok(())
+}
+
 fn abort_log_stream(streams: &State<'_, LogStreams>, stream_id: &str) {
     let Ok(mut streams) = streams.0.lock() else {
         return;
@@ -1961,6 +2294,8 @@ fn kube_error(error: kube::Error) -> String {
 pub fn run() {
     tauri::Builder::default()
         .manage(LogStreams::default())
+        .manage(PortForwards::default())
+        .manage(ExecSessions::default())
         .invoke_handler(tauri::generate_handler![
             check_context_connection,
             get_custom_resource_details,
@@ -1974,7 +2309,14 @@ pub fn run() {
             list_namespaces,
             list_resources,
             start_workload_log_stream,
-            stop_log_stream
+            stop_log_stream,
+            start_port_forward,
+            stop_port_forward,
+            list_port_forwards,
+            start_exec_session,
+            send_exec_input,
+            resize_exec,
+            stop_exec_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

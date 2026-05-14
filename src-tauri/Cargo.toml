@@ -16,7 +16,8 @@ tauri-build = { version = "2", features = [] }
 chrono = "0.4"
 k8s-openapi = { version = "0.26", features = ["latest"] }
 futures-util = "0.3"
-kube = { version = "2.0", features = ["client", "config", "derive", "rustls-tls"] }
+kube = { version = "2.0", features = ["client", "config", "derive", "rustls-tls", "ws"] }
+tokio = { version = "1", features = ["net", "io-util", "sync"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
