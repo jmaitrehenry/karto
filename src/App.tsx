@@ -112,6 +112,13 @@ type WorkloadDetails = {
     memory_requested: string;
     memory_limited: string;
   };
+  service_type?: string;
+  cluster_ip?: string;
+  external_ips: string[];
+  internal_traffic_policy?: string;
+  ip_families: string[];
+  service_selector: KeyValue[];
+  service_ports: { port: number; display: string }[];
   labels: KeyValue[];
   annotations: KeyValue[];
   pods: PodDetails[];
@@ -144,6 +151,7 @@ type PortForwardInfo = {
   namespace: string;
   local_port: number;
   remote_port: number;
+  service_name?: string;
 };
 
 const themeStorageKey = "karto-theme";
@@ -994,7 +1002,7 @@ export function App() {
                   Terminal
                 </button>
               ) : null}
-              {selectedResource?.kind === "Pod" ? (
+              {selectedResource?.kind === "Pod" || selectedResource?.kind === "Service" ? (
                 <button
                   className={activeDetailTab === "ports" ? "active" : ""}
                   onClick={() => setActiveDetailTab("ports")}
@@ -1432,6 +1440,17 @@ function WorkloadDetailsView({
     );
   }
 
+  if (activeTab === "ports" && fallback.kind === "Service") {
+    return (
+      <PortForwardServiceView
+        context={context}
+        namespace={workload.namespace}
+        serviceName={workload.name}
+        servicePorts={workload.service_ports}
+      />
+    );
+  }
+
   const hasImages = workload.images.length > 0;
   const resourceTotals = [
     workload.resource_totals.cpu_requested,
@@ -1467,6 +1486,21 @@ function WorkloadDetailsView({
             <InfoRow label="Namespace" value={workload.namespace} />
             <InfoRow label="Status" value={workload.status} />
             <InfoRow label="Age" value={workload.age ?? "-"} />
+            {workload.service_type ? (
+              <InfoRow label="Type" value={workload.service_type} />
+            ) : null}
+            {workload.cluster_ip ? (
+              <InfoRow label="Cluster IP" value={workload.cluster_ip} />
+            ) : null}
+            {workload.external_ips?.length > 0 ? (
+              <InfoRow label="External IP" value={workload.external_ips.join(", ")} />
+            ) : null}
+            {workload.internal_traffic_policy ? (
+              <InfoRow label="Internal Traffic Policy" value={workload.internal_traffic_policy} />
+            ) : null}
+            {workload.ip_families?.length > 0 ? (
+              <InfoRow label="IP Families" value={workload.ip_families.join(", ")} />
+            ) : null}
             {hasImages ? (
               <InfoRow label="Images" value={workload.images.join("\n")} />
             ) : null}
@@ -1558,8 +1592,23 @@ function WorkloadDetailsView({
         <div className="metadata-grid">
           <MetadataList title="Labels" values={workload.labels} />
           <MetadataList title="Annotations" values={workload.annotations.filter(a => a.key !== "kubectl.kubernetes.io/last-applied-configuration")} />
+          {workload.service_selector?.length > 0 ? (
+            <MetadataList title="Selector" values={workload.service_selector} />
+          ) : null}
         </div>
       </section>
+
+      {workload.service_ports?.length > 0 ? (
+        <section className="details-section">
+          <h2>Ports</h2>
+          <DetailsTable
+            empty="No ports configured."
+            headers={["Port"]}
+            rows={workload.service_ports.map((p) => [p.display])}
+          />
+        </section>
+      ) : null}
+
 
       {isWorkload || hasServices ? (
         <section className="details-section">
@@ -2202,6 +2251,158 @@ function PortForwardView({
             <tr>
               <th>Local port</th>
               <th>Remote port</th>
+              <th>Address</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {forwards.map((f) => (
+              <tr key={f.id}>
+                <td>{f.local_port}</td>
+                <td>{f.remote_port}</td>
+                <td>
+                  <code>127.0.0.1:{f.local_port}</code>
+                </td>
+                <td>
+                  <button
+                    className="port-forward-stop"
+                    onClick={() => { void stopForward(f.id); }}
+                    title="Stop port forward"
+                    type="button"
+                  >
+                    <X size={14} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function PortForwardServiceView({
+  context,
+  namespace,
+  serviceName,
+  servicePorts
+}: {
+  context: string;
+  namespace: string;
+  serviceName: string;
+  servicePorts: { port: number; display: string }[];
+}) {
+  const [selectedPort, setSelectedPort] = useState<number | null>(
+    servicePorts.length === 1 ? servicePorts[0].port : null
+  );
+  const [localPort, setLocalPort] = useState("");
+  const [forwards, setForwards] = useState<PortForwardInfo[]>([]);
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState("");
+
+  async function refreshForwards() {
+    try {
+      const list = await invoke<PortForwardInfo[]>("list_port_forwards");
+      setForwards(list.filter((f) => f.service_name === serviceName && f.namespace === namespace));
+    } catch {
+      // ignore
+    }
+  }
+
+  useEffect(() => {
+    void refreshForwards();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function startForward(event: React.FormEvent) {
+    event.preventDefault();
+    setError("");
+    if (!selectedPort) {
+      setError("Select a port to forward.");
+      return;
+    }
+    const lp = localPort ? parseInt(localPort, 10) : undefined;
+    if (lp !== undefined && (lp < 1 || lp > 65535)) {
+      setError("Local port must be 1–65535 if specified.");
+      return;
+    }
+    setStarting(true);
+    try {
+      await invoke<PortForwardInfo>("start_service_port_forward", {
+        context,
+        namespace,
+        serviceName,
+        servicePort: selectedPort,
+        localPort: lp ?? null,
+      });
+      setLocalPort("");
+      await refreshForwards();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  async function stopForward(id: string) {
+    try {
+      await invoke("stop_port_forward", { id });
+      await refreshForwards();
+    } catch {
+      // ignore
+    }
+  }
+
+  return (
+    <div className="port-forward-view">
+      <div className="port-forward-header">
+        <Network size={15} />
+        <span>Port Forwards — {serviceName}</span>
+      </div>
+
+      <form className="port-forward-form" onSubmit={(e) => { void startForward(e); }}>
+        <label>
+          <span>Service port</span>
+          <select
+            className="port-input"
+            onChange={(e) => setSelectedPort(Number(e.target.value) || null)}
+            value={selectedPort ?? ""}
+          >
+            {servicePorts.length > 1 ? <option value="">Select…</option> : null}
+            {servicePorts.map((p) => (
+              <option key={p.port} value={p.port}>{p.display}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Local port</span>
+          <input
+            className="port-input"
+            inputMode="numeric"
+            onChange={(e) => setLocalPort(e.target.value)}
+            placeholder="auto"
+            value={localPort}
+          />
+        </label>
+        <button className="port-forward-start" disabled={starting} type="submit">
+          {starting ? <Loader2 className="spin" size={14} /> : null}
+          Start
+        </button>
+      </form>
+
+      {error ? <p className="port-forward-error">{error}</p> : null}
+
+      {forwards.length === 0 ? (
+        <div className="port-forward-empty">
+          <Network size={24} />
+          <p>No active port forwards for this service.</p>
+        </div>
+      ) : (
+        <table className="details-table port-forward-table">
+          <thead>
+            <tr>
+              <th>Local port</th>
+              <th>Service port</th>
               <th>Address</th>
               <th></th>
             </tr>

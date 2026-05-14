@@ -64,6 +64,13 @@ struct WorkloadDetails {
     pods: Vec<PodDetails>,
     services: Vec<ServiceDetails>,
     config_warnings: Vec<ConfigWarning>,
+    service_type: Option<String>,
+    cluster_ip: Option<String>,
+    external_ips: Vec<String>,
+    internal_traffic_policy: Option<String>,
+    ip_families: Vec<String>,
+    service_selector: Vec<KeyValue>,
+    service_ports: Vec<ServicePortDetail>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -161,6 +168,7 @@ struct PortForwardInfo {
     namespace: String,
     local_port: u16,
     remote_port: u16,
+    service_name: Option<String>,
 }
 
 struct PortForwardHandle {
@@ -168,7 +176,14 @@ struct PortForwardHandle {
     pod_name: String,
     namespace: String,
     remote_port: u16,
+    service_name: Option<String>,
     task: tauri::async_runtime::JoinHandle<()>,
+}
+
+#[derive(Debug, Serialize)]
+struct ServicePortDetail {
+    port: u16,
+    display: String,
 }
 
 #[derive(Default)]
@@ -514,6 +529,13 @@ async fn get_custom_resource_details(
         pods: Vec::new(),
         services: Vec::new(),
         config_warnings: Vec::new(),
+        service_type: None,
+        cluster_ip: None,
+        external_ips: Vec::new(),
+        internal_traffic_policy: None,
+        ip_families: Vec::new(),
+        service_selector: Vec::new(),
+        service_ports: Vec::new(),
     })
 }
 
@@ -588,9 +610,7 @@ async fn get_workload_details(
         "Service" => {
             let api: Api<Service> = Api::namespaced(client, &namespace);
             let service = api.get(&name).await.map_err(kube_error)?;
-            Ok(generic_details(
-                service, "Service", namespace, "Active", None,
-            ))
+            Ok(service_details(service, namespace))
         }
         "Ingress" => {
             let api: Api<Ingress> = Api::namespaced(client, &namespace);
@@ -1018,6 +1038,13 @@ async fn workload_details_from_deployment(
         pods: pods_for(client.clone(), &namespace, &selector).await?,
         services: services_for(client, &namespace, &template_labels).await?,
         config_warnings,
+        service_type: None,
+        cluster_ip: None,
+        external_ips: Vec::new(),
+        internal_traffic_policy: None,
+        ip_families: Vec::new(),
+        service_selector: Vec::new(),
+        service_ports: Vec::new(),
     })
 }
 
@@ -1087,6 +1114,13 @@ async fn workload_details_from_stateful_set(
         pods: pods_for(client.clone(), &namespace, &selector).await?,
         services: services_for(client, &namespace, &template_labels).await?,
         config_warnings,
+        service_type: None,
+        cluster_ip: None,
+        external_ips: Vec::new(),
+        internal_traffic_policy: None,
+        ip_families: Vec::new(),
+        service_selector: Vec::new(),
+        service_ports: Vec::new(),
     })
 }
 
@@ -1156,6 +1190,13 @@ async fn workload_details_from_daemon_set(
         pods: pods_for(client.clone(), &namespace, &selector).await?,
         services: services_for(client, &namespace, &template_labels).await?,
         config_warnings,
+        service_type: None,
+        cluster_ip: None,
+        external_ips: Vec::new(),
+        internal_traffic_policy: None,
+        ip_families: Vec::new(),
+        service_selector: Vec::new(),
+        service_ports: Vec::new(),
     })
 }
 
@@ -1233,6 +1274,98 @@ fn pod_details(pod: Pod, namespace: String, status: &str) -> WorkloadDetails {
         pods: containers,
         services: Vec::new(),
         config_warnings,
+        service_type: None,
+        cluster_ip: None,
+        external_ips: Vec::new(),
+        internal_traffic_policy: None,
+        ip_families: Vec::new(),
+        service_selector: Vec::new(),
+        service_ports: Vec::new(),
+    }
+}
+
+fn service_details(service: Service, namespace: String) -> WorkloadDetails {
+    let labels = service.meta().labels.clone().unwrap_or_default();
+    let annotations = service.meta().annotations.clone().unwrap_or_default();
+    let spec = service.spec.as_ref();
+    let status = service.status.as_ref();
+
+    let service_type = spec
+        .and_then(|s| s.type_.clone())
+        .unwrap_or_else(|| "ClusterIP".to_string());
+
+    let cluster_ip = spec
+        .and_then(|s| s.cluster_ip.clone())
+        .filter(|ip| ip != "None" && !ip.is_empty());
+
+    let external_ips = status
+        .and_then(|s| s.load_balancer.as_ref())
+        .and_then(|lb| lb.ingress.as_ref())
+        .map(|ingresses| {
+            ingresses
+                .iter()
+                .filter_map(|i| i.ip.clone().or_else(|| i.hostname.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let internal_traffic_policy = spec.and_then(|s| s.internal_traffic_policy.clone());
+
+    let ip_families = spec
+        .and_then(|s| s.ip_families.clone())
+        .unwrap_or_default();
+
+    let service_selector = spec
+        .and_then(|s| s.selector.clone())
+        .map(key_values)
+        .unwrap_or_default();
+
+    let service_ports = spec
+        .and_then(|s| s.ports.as_ref())
+        .map(|ports| {
+            ports
+                .iter()
+                .map(|port| {
+                    let target = port
+                        .target_port
+                        .as_ref()
+                        .map(|t| format!(" -> {}", format_int_or_string(t)))
+                        .unwrap_or_default();
+                    let name = port
+                        .name
+                        .as_ref()
+                        .map(|n| format!(" {}", n))
+                        .unwrap_or_default();
+                    ServicePortDetail {
+                        port: port.port as u16,
+                        display: format!("{}{}{}", port.port, target, name),
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    WorkloadDetails {
+        name: service.name_any(),
+        kind: "Service".to_string(),
+        namespace,
+        age: age_for(&service),
+        ready: None,
+        status: "Active".to_string(),
+        images: Vec::new(),
+        resource_totals: ResourceTotals::default(),
+        labels: key_values(labels),
+        annotations: key_values(annotations),
+        pods: Vec::new(),
+        services: Vec::new(),
+        config_warnings: Vec::new(),
+        service_type: Some(service_type),
+        cluster_ip,
+        external_ips,
+        internal_traffic_policy,
+        ip_families,
+        service_selector,
+        service_ports,
     }
 }
 
@@ -1263,6 +1396,13 @@ where
         pods: Vec::new(),
         services: Vec::new(),
         config_warnings: Vec::new(),
+        service_type: None,
+        cluster_ip: None,
+        external_ips: Vec::new(),
+        internal_traffic_policy: None,
+        ip_families: Vec::new(),
+        service_selector: Vec::new(),
+        service_ports: Vec::new(),
     }
 }
 
@@ -1464,6 +1604,7 @@ async fn start_port_forward(
         namespace: namespace.clone(),
         local_port: actual_port,
         remote_port,
+        service_name: None,
     };
 
     port_forwards
@@ -1477,6 +1618,7 @@ async fn start_port_forward(
                 pod_name,
                 namespace,
                 remote_port,
+                service_name: None,
                 task,
             },
         );
@@ -1514,10 +1656,135 @@ fn list_port_forwards(
             namespace: h.namespace.clone(),
             local_port: h.local_port,
             remote_port: h.remote_port,
+            service_name: h.service_name.clone(),
         })
         .collect();
     list.sort_by(|a, b| a.local_port.cmp(&b.local_port));
     Ok(list)
+}
+
+#[tauri::command]
+async fn start_service_port_forward(
+    port_forwards: State<'_, PortForwards>,
+    context: String,
+    namespace: String,
+    service_name: String,
+    service_port: u16,
+    local_port: Option<u16>,
+) -> Result<PortForwardInfo, String> {
+    let client = client_for_context(&context).await?;
+
+    let svc_api: Api<Service> = Api::namespaced(client.clone(), &namespace);
+    let service = svc_api.get(&service_name).await.map_err(kube_error)?;
+    let spec = service.spec.as_ref().ok_or("Service has no spec")?;
+
+    let svc_port = spec
+        .ports
+        .as_ref()
+        .and_then(|ports| ports.iter().find(|p| p.port as u16 == service_port))
+        .ok_or_else(|| format!("Port {} not found on service", service_port))?;
+
+    let target_port: u16 = match svc_port.target_port.as_ref() {
+        Some(IntOrString::Int(n)) => *n as u16,
+        Some(IntOrString::String(_)) => service_port,
+        None => service_port,
+    };
+
+    let selector = spec.selector.clone().unwrap_or_default();
+    if selector.is_empty() {
+        return Err("Service has no selector — cannot resolve a pod".to_string());
+    }
+
+    let pods_api: Api<Pod> = Api::namespaced(client.clone(), &namespace);
+    let pods = pods_api
+        .list(&ListParams::default().labels(&label_selector(&selector)))
+        .await
+        .map_err(kube_error)?;
+
+    let pod = pods
+        .items
+        .into_iter()
+        .find(|p| {
+            p.status
+                .as_ref()
+                .and_then(|s| s.conditions.as_ref())
+                .is_some_and(|conds| {
+                    conds.iter().any(|c| c.type_ == "Ready" && c.status == "True")
+                })
+        })
+        .ok_or("No ready pod found for this service")?;
+
+    let pod_name = pod.name_any();
+
+    let bind_addr = format!("127.0.0.1:{}", local_port.unwrap_or(0));
+    let listener = tokio::net::TcpListener::bind(&bind_addr)
+        .await
+        .map_err(|e| format!("Failed to bind local port: {}", e))?;
+    let actual_port = listener
+        .local_addr()
+        .map_err(|e| e.to_string())?
+        .port();
+
+    let id = format!(
+        "{}-{}-{}-{}",
+        namespace,
+        service_name,
+        service_port,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    );
+
+    let ns = namespace.clone();
+    let pn = pod_name.clone();
+    let task = tauri::async_runtime::spawn(async move {
+        let pods: Api<Pod> = Api::namespaced(client, &ns);
+        loop {
+            let Ok((mut tcp_stream, _)) = listener.accept().await else {
+                break;
+            };
+            let pods = pods.clone();
+            let pn = pn.clone();
+            tauri::async_runtime::spawn(async move {
+                let Ok(mut pf) = pods.portforward(&pn, &[target_port]).await else {
+                    return;
+                };
+                let Some(mut kube_stream) = pf.take_stream(target_port) else {
+                    return;
+                };
+                let _ = tokio::io::copy_bidirectional(&mut tcp_stream, &mut kube_stream).await;
+                drop(pf);
+            });
+        }
+    });
+
+    let info = PortForwardInfo {
+        id: id.clone(),
+        pod_name: pod_name.clone(),
+        namespace: namespace.clone(),
+        local_port: actual_port,
+        remote_port: service_port,
+        service_name: Some(service_name.clone()),
+    };
+
+    port_forwards
+        .0
+        .lock()
+        .map_err(|_| "Lock failed".to_string())?
+        .insert(
+            id,
+            PortForwardHandle {
+                local_port: actual_port,
+                pod_name,
+                namespace,
+                remote_port: service_port,
+                service_name: Some(service_name),
+                task,
+            },
+        );
+
+    Ok(info)
 }
 
 #[tauri::command]
@@ -2311,6 +2578,7 @@ pub fn run() {
             start_workload_log_stream,
             stop_log_stream,
             start_port_forward,
+            start_service_port_forward,
             stop_port_forward,
             list_port_forwards,
             start_exec_session,
