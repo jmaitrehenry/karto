@@ -102,7 +102,7 @@ select {
   padding: 0 12px 24px;
   background: linear-gradient(180deg, rgb(var(--mantle-rgb) / 0.98) 0%, var(--crust) 100%);
   border-right: 1px solid rgb(var(--text-rgb) / 0.08);
-  overflow: hidden;
+  overflow: visible;
 }
 
 .window-drag-strip {
