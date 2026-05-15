@@ -2398,7 +2398,10 @@ function TerminalView({
       {status === "error" ? (
         <div className="terminal-error">{errorMsg}</div>
       ) : null}
-      <div className="terminal-container" ref={termRef} />
+      {status === "ended" ? (
+        <div className="terminal-ended">Session ended</div>
+      ) : null}
+      <div className="terminal-container" ref={termRef} style={status === "ended" ? { display: "none" } : undefined} />
     </div>
   );
 }

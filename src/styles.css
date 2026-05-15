@@ -1312,6 +1312,15 @@ select {
   flex-shrink: 0;
 }
 
+.terminal-ended {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--overlay-1);
+  font-size: 13px;
+}
+
 .terminal-container {
   flex: 1;
   min-height: 0;
