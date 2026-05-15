@@ -21,7 +21,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     env,
     process::Command,
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
 use tauri::{AppHandle, Emitter, State};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -193,10 +193,21 @@ struct ExecHandle {
     stdin_tx: mpsc::Sender<String>,
     resize_tx: mpsc::Sender<(u16, u16)>,
     task: tauri::async_runtime::JoinHandle<()>,
+    pod_name: String,
+    namespace: String,
+    container: Option<String>,
 }
 
-#[derive(Default)]
-struct ExecSessions(Mutex<HashMap<String, ExecHandle>>);
+#[derive(Debug, Serialize)]
+struct ExecSessionInfo {
+    id: String,
+    pod_name: String,
+    namespace: String,
+    container: Option<String>,
+}
+
+#[derive(Default, Clone)]
+struct ExecSessions(Arc<Mutex<HashMap<String, ExecHandle>>>);
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1811,8 +1822,17 @@ async fn start_exec_session(
     let (resize_tx, resize_rx) = mpsc::channel::<(u16, u16)>(8);
 
     let sid = session_id.clone();
+    let pod_name_task = pod_name.clone();
+    let namespace_task = namespace.clone();
+    let container_task = container.clone();
+    let sessions_arc = exec_sessions.0.clone();
+    let sid_cleanup = session_id.clone();
     let task = tauri::async_runtime::spawn(async move {
-        run_exec_session(app, client, namespace, pod_name, container, sid, stdin_rx, resize_rx).await;
+        run_exec_session(app, client, namespace_task, pod_name_task, container_task, sid, stdin_rx, resize_rx).await;
+        // Auto-remove when the session ends naturally (abort skips this code)
+        if let Ok(mut s) = sessions_arc.lock() {
+            s.remove(&sid_cleanup);
+        }
     });
 
     exec_sessions
@@ -1825,6 +1845,9 @@ async fn start_exec_session(
                 stdin_tx,
                 resize_tx,
                 task,
+                pod_name,
+                namespace,
+                container,
             },
         );
 
@@ -1977,6 +2000,26 @@ fn stop_exec_session(
         handle.task.abort();
     }
     Ok(())
+}
+
+#[tauri::command]
+fn list_exec_sessions(
+    exec_sessions: State<'_, ExecSessions>,
+) -> Result<Vec<ExecSessionInfo>, String> {
+    let sessions = exec_sessions
+        .0
+        .lock()
+        .map_err(|_| "Lock failed".to_string())?;
+    let list: Vec<ExecSessionInfo> = sessions
+        .iter()
+        .map(|(id, h)| ExecSessionInfo {
+            id: id.clone(),
+            pod_name: h.pod_name.clone(),
+            namespace: h.namespace.clone(),
+            container: h.container.clone(),
+        })
+        .collect();
+    Ok(list)
 }
 
 fn abort_log_stream(streams: &State<'_, LogStreams>, stream_id: &str) {
@@ -2590,6 +2633,7 @@ pub fn run() {
             send_exec_input,
             resize_exec,
             stop_exec_session,
+            list_exec_sessions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
