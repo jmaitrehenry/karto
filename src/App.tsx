@@ -5,6 +5,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import {
+  Cable,
   Check,
   ChevronDown,
   ChevronRight,
@@ -154,6 +155,29 @@ type PortForwardInfo = {
   service_name?: string;
 };
 
+type ExecSessionInfo = {
+  id: string;
+  pod_name: string;
+  namespace: string;
+  container?: string;
+};
+
+const MAX_HISTORY_LINES = 1000;
+const terminalHistory = new Map<string, string>();
+
+function appendToHistory(sessionId: string, data: string) {
+  const combined = (terminalHistory.get(sessionId) ?? "") + data;
+  const lines = combined.split("\n");
+  terminalHistory.set(
+    sessionId,
+    lines.length > MAX_HISTORY_LINES ? lines.slice(lines.length - MAX_HISTORY_LINES).join("\n") : combined
+  );
+}
+
+function clearTerminalHistory(sessionId: string) {
+  terminalHistory.delete(sessionId);
+}
+
 const themeStorageKey = "karto-theme";
 
 type LoadState<T> =
@@ -248,6 +272,14 @@ export function App() {
   const [query, setQuery] = useState("");
   const [clusterMenuOpen, setClusterMenuOpen] = useState(false);
   const clusterMenuRef = useRef<HTMLDivElement>(null);
+  const [activePortForwards, setActivePortForwards] = useState<PortForwardInfo[]>([]);
+  const [activeExecSessions, setActiveExecSessions] = useState<ExecSessionInfo[]>([]);
+  const [pfPopoverOpen, setPfPopoverOpen] = useState(false);
+  const [execPopoverOpen, setExecPopoverOpen] = useState(false);
+  const pfPopoverRef = useRef<HTMLDivElement>(null);
+  const execPopoverRef = useRef<HTMLDivElement>(null);
+  const pendingDetailTabRef = useRef<DetailTab | null>(null);
+  const pendingContainerRef = useRef<string | null>(null);
   const selectedResourceNamespace =
     selectedResource?.namespace ?? selectedNamespace;
   const shouldShowCrdPanel =
@@ -258,6 +290,35 @@ export function App() {
     document.documentElement.style.colorScheme = themeMode;
     window.localStorage.setItem(themeStorageKey, themeMode);
   }, [themeMode]);
+
+  useEffect(() => {
+    const pollSessions = async () => {
+      try {
+        const [fwds, sessions] = await Promise.all([
+          invoke<PortForwardInfo[]>("list_port_forwards"),
+          invoke<ExecSessionInfo[]>("list_exec_sessions"),
+        ]);
+        setActivePortForwards(fwds);
+        setActiveExecSessions(sessions);
+      } catch {}
+    };
+    void pollSessions();
+    const interval = setInterval(() => void pollSessions(), 2000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (pfPopoverRef.current && !pfPopoverRef.current.contains(e.target as Node)) {
+        setPfPopoverOpen(false);
+      }
+      if (execPopoverRef.current && !execPopoverRef.current.contains(e.target as Node)) {
+        setExecPopoverOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
 
   useEffect(() => {
     void loadContexts();
@@ -295,7 +356,12 @@ export function App() {
   }, [selectedContext, selectedNamespace, resourceView]);
 
   useEffect(() => {
-    setActiveDetailTab("overview");
+    if (pendingDetailTabRef.current) {
+      setActiveDetailTab(pendingDetailTabRef.current);
+      pendingDetailTabRef.current = null;
+    } else {
+      setActiveDetailTab("overview");
+    }
   }, [selectedResource]);
 
   useEffect(() => {
@@ -1042,6 +1108,123 @@ export function App() {
           )}
 
           <div className="topbar-actions">
+            <div className="session-badge-wrap" ref={pfPopoverRef}>
+              <button
+                aria-label="Port forwards actifs"
+                className={`icon-button session-badge-btn${pfPopoverOpen ? " active" : ""}`}
+                onClick={() => { setPfPopoverOpen(o => !o); setExecPopoverOpen(false); }}
+                onPointerDown={(e) => e.stopPropagation()}
+                title="Port forwards actifs"
+                type="button"
+              >
+                <Cable size={16} />
+                {activePortForwards.length > 0 && (
+                  <span className="session-badge">{activePortForwards.length}</span>
+                )}
+              </button>
+              {pfPopoverOpen && (
+                <div className="session-popover">
+                  <div className="session-popover-header">Port Forwards</div>
+                  {activePortForwards.length === 0 ? (
+                    <div className="session-popover-empty">Aucun port forward actif</div>
+                  ) : (
+                    activePortForwards.map((fwd) => (
+                      <div className="session-popover-item" key={fwd.id}>
+                        <div className="session-popover-info">
+                          <span className="session-popover-title">
+                            {fwd.service_name ?? fwd.pod_name}
+                          </span>
+                          <span className="session-popover-sub">
+                            {fwd.namespace} · :{fwd.local_port} → :{fwd.remote_port}
+                          </span>
+                        </div>
+                        <button
+                          className="session-popover-stop"
+                          onClick={async () => {
+                            await invoke("stop_port_forward", { id: fwd.id });
+                            const fwds = await invoke<PortForwardInfo[]>("list_port_forwards");
+                            setActivePortForwards(fwds);
+                          }}
+                          title="Arrêter"
+                          type="button"
+                        >
+                          <X size={13} />
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="session-badge-wrap" ref={execPopoverRef}>
+              <button
+                aria-label="Sessions terminal actives"
+                className={`icon-button session-badge-btn${execPopoverOpen ? " active" : ""}`}
+                onClick={() => { setExecPopoverOpen(o => !o); setPfPopoverOpen(false); }}
+                onPointerDown={(e) => e.stopPropagation()}
+                title="Sessions terminal actives"
+                type="button"
+              >
+                <TerminalSquare size={16} />
+                {activeExecSessions.length > 0 && (
+                  <span className="session-badge">{activeExecSessions.length}</span>
+                )}
+              </button>
+              {execPopoverOpen && (
+                <div className="session-popover">
+                  <div className="session-popover-header">Terminaux</div>
+                  {activeExecSessions.length === 0 ? (
+                    <div className="session-popover-empty">Aucune session terminal active</div>
+                  ) : (
+                    activeExecSessions.map((sess) => (
+                      <div
+                        className="session-popover-item session-popover-item-clickable"
+                        key={sess.id}
+                        onClick={() => {
+                          pendingDetailTabRef.current = "terminal";
+                          pendingContainerRef.current = sess.container ?? null;
+                          setSelectedResource({ name: sess.pod_name, kind: "Pod", namespace: sess.namespace, status: "Active" });
+                          setSelectedCustomResource(null);
+                          setExecPopoverOpen(false);
+                        }}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            pendingDetailTabRef.current = "terminal";
+                            pendingContainerRef.current = sess.container ?? null;
+                            setSelectedResource({ name: sess.pod_name, kind: "Pod", namespace: sess.namespace, status: "Active" });
+                            setSelectedCustomResource(null);
+                            setExecPopoverOpen(false);
+                          }
+                        }}
+                      >
+                        <div className="session-popover-info">
+                          <span className="session-popover-title">{sess.pod_name}</span>
+                          <span className="session-popover-sub">
+                            {sess.namespace}{sess.container ? ` · ${sess.container}` : ""}
+                          </span>
+                        </div>
+                        <button
+                          className="session-popover-stop"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            clearTerminalHistory(sess.id);
+                            await invoke("stop_exec_session", { sessionId: sess.id });
+                            const sessions = await invoke<ExecSessionInfo[]>("list_exec_sessions");
+                            setActiveExecSessions(sessions);
+                          }}
+                          title="Fermer"
+                          type="button"
+                        >
+                          <X size={13} />
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
             <button
               aria-label={
                 themeMode === "dark"
@@ -1157,6 +1340,7 @@ export function App() {
           )}
         </div>
 
+        <div className="content-body">
         {contexts.status === "error" ? (
           <EmptyState
             icon={<TerminalSquare size={28} />}
@@ -1172,13 +1356,16 @@ export function App() {
         ) : selectedCustomResource ? (
           <WorkloadDetailsView
             activeTab={activeDetailTab}
+            allPortForwards={activePortForwards}
             context={selectedContext}
             details={details}
             events={events}
             fallback={{ name: selectedCustomResource.name, kind: selectedCustomResource.crd.kind, namespace: selectedCustomResource.namespace, status: "Active" }}
             logLines={[]}
             logStatus={{ status: "idle", data: null }}
+            onForwardsChanged={setActivePortForwards}
             onOpenResource={(resource) => openResource(resource, true)}
+            targetContainerRef={pendingContainerRef}
             yaml={yaml}
           />
         ) : selectedCrd ? (
@@ -1189,13 +1376,16 @@ export function App() {
         ) : selectedResource ? (
           <WorkloadDetailsView
             activeTab={activeDetailTab}
+            allPortForwards={activePortForwards}
             context={selectedContext}
             details={details}
             events={events}
             fallback={selectedResource}
             logLines={logLines}
             logStatus={logStatus}
+            onForwardsChanged={setActivePortForwards}
             onOpenResource={(resource) => openResource(resource, true)}
+            targetContainerRef={pendingContainerRef}
             yaml={yaml}
           />
         ) : (
@@ -1206,6 +1396,7 @@ export function App() {
             showNamespace={!selectedNamespace}
           />
         )}
+        </div>
       </section>
     </main>
   );
@@ -1363,23 +1554,29 @@ function CustomResourceTableView({
 
 function WorkloadDetailsView({
   activeTab,
+  allPortForwards,
   context,
   details,
   events,
   fallback,
   logLines,
   logStatus,
+  onForwardsChanged,
   onOpenResource,
+  targetContainerRef,
   yaml
 }: {
   activeTab: DetailTab;
+  allPortForwards: PortForwardInfo[];
   context: string;
   details: LoadState<WorkloadDetails | null>;
   events: LoadState<EventSummary[]>;
   fallback: ResourceSummary;
   logLines: LogLine[];
   logStatus: LoadState<null>;
+  onForwardsChanged: (fwds: PortForwardInfo[]) => void;
   onOpenResource: (resource: ResourceSummary) => void;
+  targetContainerRef: React.RefObject<string | null>;
   yaml: LoadState<string>;
 }) {
   if (details.status === "loading" && !details.data) {
@@ -1417,24 +1614,13 @@ function WorkloadDetailsView({
     return <YamlView yaml={yaml} />;
   }
 
-  if (activeTab === "terminal" && fallback.kind === "Pod") {
-    const containerNames = workload.pods.map((p) => p.name);
-    return (
-      <TerminalView
-        key={`${context}-${workload.namespace}-${workload.name}`}
-        context={context}
-        namespace={workload.namespace}
-        podName={workload.name}
-        containers={containerNames}
-      />
-    );
-  }
-
   if (activeTab === "ports" && fallback.kind === "Pod") {
     return (
       <PortForwardView
+        allPortForwards={allPortForwards}
         context={context}
         namespace={workload.namespace}
+        onForwardsChanged={onForwardsChanged}
         podName={workload.name}
       />
     );
@@ -1443,8 +1629,10 @@ function WorkloadDetailsView({
   if (activeTab === "ports" && fallback.kind === "Service") {
     return (
       <PortForwardServiceView
+        allPortForwards={allPortForwards}
         context={context}
         namespace={workload.namespace}
+        onForwardsChanged={onForwardsChanged}
         serviceName={workload.name}
         servicePorts={workload.service_ports}
       />
@@ -1462,9 +1650,27 @@ function WorkloadDetailsView({
   const hasPods = workload.pods.length > 0;
   const hasServices = workload.services.length > 0;
   const isWorkload = supportsLogs(fallback);
+  const isPod = fallback.kind === "Pod";
 
   return (
-    <div className="details-view">
+    <>
+      {isPod && (
+        <div style={activeTab === "terminal"
+          ? { display: "flex", flexDirection: "column", height: "100%" }
+          : { display: "none" }}
+        >
+          <TerminalView
+            key={`${context}-${workload.namespace}-${workload.name}`}
+            context={context}
+            namespace={workload.namespace}
+            podName={workload.name}
+            containers={workload.pods.map((p) => p.name)}
+            isVisible={activeTab === "terminal"}
+            targetContainerRef={targetContainerRef}
+          />
+        </div>
+      )}
+      {(!isPod || activeTab !== "terminal") && <div className="details-view">
       <div className="details-header">
         <div>
           <h1>{workload.name}</h1>
@@ -1631,7 +1837,8 @@ function WorkloadDetailsView({
           />
         </section>
       ) : null}
-    </div>
+    </div>}
+    </>
   );
 }
 
@@ -1880,6 +2087,9 @@ function highlightYamlLine(line: string): React.ReactNode {
 
 function YamlView({ yaml }: { yaml: LoadState<string> }) {
   const [collapsedLines, setCollapsedLines] = useState<Set<number>>(new Set());
+  const [fontSize, setFontSize] = useState(11);
+  const decreaseFontSize = () => setFontSize((s) => Math.max(8, s - 1));
+  const increaseFontSize = () => setFontSize((s) => Math.min(20, s + 1));
 
   const lines = useMemo(() => yaml.data?.split("\n") ?? [], [yaml.data]);
   const collapsible = useMemo(() => findCollapsibleLines(lines), [lines]);
@@ -1926,7 +2136,13 @@ function YamlView({ yaml }: { yaml: LoadState<string> }) {
   }
 
   return (
-    <div className="yaml-panel" aria-label="Read-only Kubernetes YAML">
+    <>
+      <div className="yaml-toolbar">
+        <button className="yaml-font-btn" onClick={decreaseFontSize} aria-label="Decrease font size" disabled={fontSize <= 8}>−</button>
+        <span className="yaml-font-size">{fontSize}px</span>
+        <button className="yaml-font-btn" onClick={increaseFontSize} aria-label="Increase font size" disabled={fontSize >= 20}>+</button>
+      </div>
+      <div className="yaml-panel" aria-label="Read-only Kubernetes YAML" style={{ fontSize }}>
       {lines.map((line, i) => {
         if (skipped.has(i)) return null;
         const isCollapsible = collapsible.has(i);
@@ -1952,6 +2168,7 @@ function YamlView({ yaml }: { yaml: LoadState<string> }) {
         );
       })}
     </div>
+    </>
   );
 }
 
@@ -1959,20 +2176,48 @@ function TerminalView({
   context,
   namespace,
   podName,
-  containers
+  containers,
+  isVisible,
+  targetContainerRef
 }: {
   context: string;
   namespace: string;
   podName: string;
   containers: string[];
+  isVisible: boolean;
+  targetContainerRef: React.RefObject<string | null>;
 }) {
   const termRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const sessionIdRef = useRef<string | null>(null);
-  const [selectedContainer, setSelectedContainer] = useState(containers[0] ?? "");
+  const startSessionRef = useRef<(() => Promise<void>) | null>(null);
+
+  // Consume the pending container from the ref (read once, then clear)
+  const resolvedInitial = targetContainerRef.current && containers.includes(targetContainerRef.current)
+    ? targetContainerRef.current
+    : (containers[0] ?? "");
+  if (targetContainerRef.current) targetContainerRef.current = null;
+
+  const [selectedContainer, setSelectedContainer] = useState(resolvedInitial);
   const [status, setStatus] = useState<"connecting" | "connected" | "ended" | "error">("connecting");
   const [errorMsg, setErrorMsg] = useState("");
+
+  // Start session on first visibility; resize on subsequent visibility
+  useEffect(() => {
+    if (!isVisible) return;
+    if (sessionIdRef.current) {
+      // Session already running — just resize to fit the now-visible container
+      if (fitAddonRef.current) {
+        fitAddonRef.current.fit();
+        const dims = fitAddonRef.current.proposeDimensions();
+        if (dims) void invoke("resize_exec", { sessionId: sessionIdRef.current, rows: dims.rows, cols: dims.cols });
+      }
+    } else if (startSessionRef.current) {
+      // Terminal became visible for the first time — start or reconnect
+      void startSessionRef.current();
+    }
+  }, [isVisible]);
 
   useEffect(() => {
     const el = termRef.current;
@@ -2028,28 +2273,47 @@ function TerminalView({
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
 
+    sessionIdRef.current = null;
+    startSessionRef.current = null;
+
     let sessionId: string | null = null;
     let mounted = true;
     let unlistenOutput: (() => void) | null = null;
     let unlistenEnded: (() => void) | null = null;
 
-    async function startSession() {
+    async function startOrResumeSession() {
       try {
-        const sid = await invoke<string>("start_exec_session", {
-          context,
-          namespace,
-          podName,
-          container: selectedContainer || null,
-        });
-        if (!mounted) {
-          void invoke("stop_exec_session", { sessionId: sid });
-          return;
+        // Check if a session for this pod+container is already running
+        const existingSessions = await invoke<ExecSessionInfo[]>("list_exec_sessions");
+        const containerToMatch = selectedContainer || "";
+        const existing = existingSessions.find(
+          (s) => s.pod_name === podName && s.namespace === namespace && (s.container ?? "") === containerToMatch
+        );
+
+        let sid: string;
+        if (existing) {
+          sid = existing.id;
+          setStatus("connected");
+        } else {
+          sid = await invoke<string>("start_exec_session", {
+            context,
+            namespace,
+            podName,
+            container: selectedContainer || null,
+          });
         }
+
+        if (!mounted) return;
         sessionId = sid;
         sessionIdRef.current = sid;
 
+        // Replay stored history into the fresh xterm instance
+        const history = terminalHistory.get(sid);
+        if (history) term.write(history);
+
         unlistenOutput = await listen<string>(`exec-output-${sid}`, (event) => {
           if (!mounted) return;
+          appendToHistory(sid, event.payload);
           term.write(event.payload);
           setStatus("connected");
         });
@@ -2058,9 +2322,11 @@ function TerminalView({
           if (!mounted) return;
           setStatus("ended");
           term.writeln("\r\n\r\n[Session ended]");
+          // Clean up: session is gone from backend, remove history and update badge
+          clearTerminalHistory(sid);
+          void invoke("stop_exec_session", { sessionId: sid });
         });
 
-        // Send resize immediately
         const dims = fitAddon.proposeDimensions();
         if (dims) {
           void invoke("resize_exec", { sessionId: sid, rows: dims.rows, cols: dims.cols });
@@ -2072,7 +2338,10 @@ function TerminalView({
       }
     }
 
-    void startSession();
+    // Store the function so the isVisible effect can trigger it at the right moment
+    startSessionRef.current = startOrResumeSession;
+    // If already visible when this effect runs (e.g. container switch on terminal tab), start immediately
+    if (isVisible) void startOrResumeSession();
 
     term.onData((data) => {
       if (sessionId) {
@@ -2093,7 +2362,8 @@ function TerminalView({
     return () => {
       mounted = false;
       resizeObserver.disconnect();
-      if (sessionId) void invoke("stop_exec_session", { sessionId });
+      // Do NOT stop the exec session — it stays alive in the background
+      // and remains accessible via the terminal sessions badge.
       unlistenOutput?.();
       unlistenEnded?.();
       term.dispose();
@@ -2128,38 +2398,42 @@ function TerminalView({
       {status === "error" ? (
         <div className="terminal-error">{errorMsg}</div>
       ) : null}
-      <div className="terminal-container" ref={termRef} />
+      {status === "ended" ? (
+        <div className="terminal-ended">Session ended</div>
+      ) : null}
+      <div className="terminal-container" ref={termRef} style={status === "ended" ? { display: "none" } : undefined} />
     </div>
   );
 }
 
 function PortForwardView({
+  allPortForwards,
   context,
   namespace,
+  onForwardsChanged,
   podName
 }: {
+  allPortForwards: PortForwardInfo[];
   context: string;
   namespace: string;
+  onForwardsChanged: (fwds: PortForwardInfo[]) => void;
   podName: string;
 }) {
   const [remotePort, setRemotePort] = useState("");
   const [localPort, setLocalPort] = useState("");
-  const [forwards, setForwards] = useState<PortForwardInfo[]>([]);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
+
+  const forwards = allPortForwards.filter((f) => f.pod_name === podName && f.namespace === namespace);
 
   async function refreshForwards() {
     try {
       const list = await invoke<PortForwardInfo[]>("list_port_forwards");
-      setForwards(list.filter((f) => f.pod_name === podName && f.namespace === namespace));
+      onForwardsChanged(list);
     } catch {
       // ignore
     }
   }
-
-  useEffect(() => {
-    void refreshForwards();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function startForward(event: React.FormEvent) {
     event.preventDefault();
@@ -2281,13 +2555,17 @@ function PortForwardView({
 }
 
 function PortForwardServiceView({
+  allPortForwards,
   context,
   namespace,
+  onForwardsChanged,
   serviceName,
   servicePorts
 }: {
+  allPortForwards: PortForwardInfo[];
   context: string;
   namespace: string;
+  onForwardsChanged: (fwds: PortForwardInfo[]) => void;
   serviceName: string;
   servicePorts: { port: number; display: string }[];
 }) {
@@ -2295,22 +2573,19 @@ function PortForwardServiceView({
     servicePorts.length === 1 ? servicePorts[0].port : null
   );
   const [localPort, setLocalPort] = useState("");
-  const [forwards, setForwards] = useState<PortForwardInfo[]>([]);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
+
+  const forwards = allPortForwards.filter((f) => f.service_name === serviceName && f.namespace === namespace);
 
   async function refreshForwards() {
     try {
       const list = await invoke<PortForwardInfo[]>("list_port_forwards");
-      setForwards(list.filter((f) => f.service_name === serviceName && f.namespace === namespace));
+      onForwardsChanged(list);
     } catch {
       // ignore
     }
   }
-
-  useEffect(() => {
-    void refreshForwards();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function startForward(event: React.FormEvent) {
     event.preventDefault();

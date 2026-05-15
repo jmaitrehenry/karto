@@ -416,11 +416,19 @@ select {
 }
 
 .content {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   height: 100vh;
-  overflow: auto;
+  overflow: hidden;
   padding: 10px 32px 32px;
   background: rgb(var(--base-rgb) / 0.98);
+}
+
+.content-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 
 .topbar,
@@ -531,6 +539,127 @@ select {
   color: var(--subtext-0);
   font-size: 12px;
   font-weight: 600;
+}
+
+.session-badge-wrap {
+  position: relative;
+}
+
+.session-badge-btn {
+  position: relative;
+}
+
+.session-badge-btn.active {
+  background: rgb(var(--text-rgb) / 0.08);
+}
+
+.session-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--red);
+  color: var(--crust);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.session-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 200;
+  min-width: 260px;
+  border: 1px solid rgb(var(--text-rgb) / 0.1);
+  border-radius: 10px;
+  background: var(--mantle);
+  box-shadow: 0 8px 24px rgb(var(--shadow-rgb) / 0.4);
+  overflow: hidden;
+}
+
+.session-popover-header {
+  padding: 9px 13px 7px;
+  color: var(--subtext-0);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-bottom: 1px solid rgb(var(--text-rgb) / 0.07);
+}
+
+.session-popover-empty {
+  padding: 12px 13px;
+  color: var(--overlay-0);
+  font-size: 12px;
+}
+
+.session-popover-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 8px 13px;
+  border-bottom: 1px solid rgb(var(--text-rgb) / 0.05);
+}
+
+.session-popover-item:last-child {
+  border-bottom: none;
+}
+
+.session-popover-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.session-popover-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-popover-sub {
+  font-size: 11px;
+  color: var(--subtext-0);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-popover-item-clickable {
+  cursor: pointer;
+}
+
+.session-popover-item-clickable:hover {
+  background: rgb(var(--text-rgb) / 0.05);
+}
+
+.session-popover-stop {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--overlay-0);
+  cursor: pointer;
+}
+
+.session-popover-stop:hover {
+  background: rgb(var(--text-rgb) / 0.08);
+  color: var(--red);
 }
 
 .subbar {
@@ -942,6 +1071,48 @@ select {
   color: var(--green);
 }
 
+.yaml-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-bottom: 6px;
+}
+
+.yaml-font-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgb(var(--text-rgb) / 0.15);
+  border-radius: 5px;
+  background: rgb(var(--surface-rgb) / 0.5);
+  color: var(--subtext-1);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+  transition: background 0.1s, color 0.1s;
+}
+
+.yaml-font-btn:hover:not(:disabled) {
+  background: rgb(var(--text-rgb) / 0.1);
+  color: var(--text);
+}
+
+.yaml-font-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.yaml-font-size {
+  font-size: 11px;
+  color: var(--overlay-1);
+  min-width: 26px;
+  text-align: center;
+}
+
 .yaml-panel {
   min-height: calc(100vh - 150px);
   max-height: calc(100vh - 150px);
@@ -1089,7 +1260,7 @@ select {
   display: flex;
   flex-direction: column;
   height: 100%;
-  min-height: 0;
+  min-height: 300px;
   background: var(--crust);
 }
 
@@ -1139,6 +1310,15 @@ select {
   color: var(--red);
   font-size: 12px;
   flex-shrink: 0;
+}
+
+.terminal-ended {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--overlay-1);
+  font-size: 13px;
 }
 
 .terminal-container {
