@@ -2606,8 +2606,24 @@ fn kube_error(error: kube::Error) -> String {
     format!("Kubernetes API request failed: {}", error)
 }
 
+#[tauri::command]
+fn open_release_url(url: String) -> Result<(), String> {
+    if !url.starts_with("https://github.com/") {
+        return Err("Invalid URL".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    Command::new("open").arg(&url).spawn().map_err(|e| e.to_string())?;
+    #[cfg(target_os = "linux")]
+    Command::new("xdg-open").arg(&url).spawn().map_err(|e| e.to_string())?;
+    #[cfg(target_os = "windows")]
+    Command::new("cmd").args(["/C", "start", "", &url]).spawn().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(LogStreams::default())
         .manage(PortForwards::default())
         .manage(ExecSessions::default())
@@ -2634,6 +2650,7 @@ pub fn run() {
             resize_exec,
             stop_exec_session,
             list_exec_sessions,
+            open_release_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

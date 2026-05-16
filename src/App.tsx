@@ -1,10 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { check as checkUpdate } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import {
+  ArrowUpCircle,
   Cable,
   Check,
   ChevronDown,
@@ -180,6 +183,7 @@ function clearTerminalHistory(sessionId: string) {
 
 const themeStorageKey = "karto-theme";
 
+
 type LoadState<T> =
   | { status: "idle"; data: T }
   | { status: "loading"; data: T }
@@ -276,8 +280,13 @@ export function App() {
   const [activeExecSessions, setActiveExecSessions] = useState<ExecSessionInfo[]>([]);
   const [pfPopoverOpen, setPfPopoverOpen] = useState(false);
   const [execPopoverOpen, setExecPopoverOpen] = useState(false);
+  const [pendingUpdate, setPendingUpdate] = useState<Awaited<ReturnType<typeof checkUpdate>> | null>(null);
+  const [updatePopoverOpen, setUpdatePopoverOpen] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<number | null>(null);
+  const [updateReady, setUpdateReady] = useState(false);
   const pfPopoverRef = useRef<HTMLDivElement>(null);
   const execPopoverRef = useRef<HTMLDivElement>(null);
+  const updatePopoverRef = useRef<HTMLDivElement>(null);
   const pendingDetailTabRef = useRef<DetailTab | null>(null);
   const pendingContainerRef = useRef<string | null>(null);
   const selectedResourceNamespace =
@@ -315,9 +324,22 @@ export function App() {
       if (execPopoverRef.current && !execPopoverRef.current.contains(e.target as Node)) {
         setExecPopoverOpen(false);
       }
+      if (updatePopoverRef.current && !updatePopoverRef.current.contains(e.target as Node)) {
+        setUpdatePopoverOpen(false);
+      }
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  useEffect(() => {
+    const pollForUpdate = async () => {
+      try {
+        const update = await checkUpdate();
+        if (update?.available) setPendingUpdate(update);
+      } catch {}
+    };
+    void pollForUpdate();
   }, []);
 
   useEffect(() => {
@@ -1225,6 +1247,71 @@ export function App() {
                 </div>
               )}
             </div>
+            {pendingUpdate && (
+              <div className="session-badge-wrap" ref={updatePopoverRef}>
+                <button
+                  aria-label="Mise à jour disponible"
+                  className={`icon-button session-badge-btn update-badge-btn${updatePopoverOpen ? " active" : ""}`}
+                  onClick={() => setUpdatePopoverOpen((o) => !o)}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  title={`Version ${pendingUpdate.version} disponible`}
+                  type="button"
+                >
+                  <ArrowUpCircle size={16} />
+                  <span className="session-badge update-dot" />
+                </button>
+                {updatePopoverOpen && (
+                  <div className="session-popover update-popover">
+                    <div className="session-popover-header">Mise à jour disponible</div>
+                    <div className="update-popover-body">
+                      <span className="update-version">v{pendingUpdate.version}</span>
+                      {updateReady ? (
+                        <button
+                          className="update-download-btn"
+                          onClick={() => void relaunch()}
+                          type="button"
+                        >
+                          Relancer
+                        </button>
+                      ) : updateProgress !== null ? (
+                        <div className="update-progress-wrap">
+                          <div
+                            className="update-progress-bar"
+                            style={{ width: `${updateProgress}%` }}
+                          />
+                          <span className="update-progress-label">{updateProgress}%</span>
+                        </div>
+                      ) : (
+                        <button
+                          className="update-download-btn"
+                          onClick={async () => {
+                            let downloaded = 0;
+                            let total = 0;
+                            await pendingUpdate.downloadAndInstall((event) => {
+                              if (event.event === "Started") {
+                                total = event.data.contentLength ?? 0;
+                                setUpdateProgress(0);
+                              } else if (event.event === "Progress") {
+                                downloaded += event.data.chunkLength;
+                                setUpdateProgress(
+                                  total > 0 ? Math.round((downloaded / total) * 100) : 0
+                                );
+                              } else if (event.event === "Finished") {
+                                setUpdateProgress(100);
+                                setUpdateReady(true);
+                              }
+                            });
+                          }}
+                          type="button"
+                        >
+                          Installer
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
             <button
               aria-label={
                 themeMode === "dark"
