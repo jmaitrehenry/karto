@@ -1,9 +1,13 @@
 import { readFileSync, readdirSync, writeFileSync } from "fs";
 import { join } from "path";
 
-const tauriConf = JSON.parse(readFileSync("src-tauri/tauri.conf.json", "utf8"));
-const version = tauriConf.version;
-const tag = `v${version}`;
+const ref = process.env.GITHUB_REF ?? "";
+const tag = ref.replace("refs/tags/", "");
+if (!tag.startsWith("v")) {
+  console.error(`GITHUB_REF does not look like a version tag: ${ref}`);
+  process.exit(1);
+}
+const version = tag.slice(1);
 const baseUrl = `https://github.com/jmaitrehenry/karto/releases/download/${tag}`;
 
 const artifactsDir = "artifacts";
