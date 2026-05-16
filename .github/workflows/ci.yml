@@ -80,14 +80,11 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-            artifact_name: karto-macos-bundle
-            artifact_path: src-tauri/target/release/bundle/macos/Karto.app.zip
+            platform: darwin-aarch64
           - os: ubuntu-latest
-            artifact_name: karto-linux-bundle
-            artifact_path: src-tauri/target/release/karto
+            platform: linux-x86_64
           - os: windows-latest
-            artifact_name: karto-windows-bundle
-            artifact_path: src-tauri/target/release/karto.exe
+            platform: windows-x86_64
 
     steps:
       - name: Checkout
@@ -131,12 +128,14 @@ jobs:
             src-tauri/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
         run: npm ci
 
       - name: Build Tauri app
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri:build
 
       - name: Decode P12 Certificate
@@ -148,12 +147,12 @@ jobs:
           echo "$P12_BASE64" | base64 --decode > certificate.p12
           echo "$P8" > .appstoreconnect_key.json
 
-      - name: Enable hardened runtime
+      - name: Sign macOS app
         if: runner.os == 'macOS'
         run: |
           codesign --deep -o runtime -s - src-tauri/target/release/bundle/macos/Karto.app
 
-      - name: Sign a Mach-O binary
+      - name: Sign and notarize macOS app
         if: runner.os == 'macOS'
         uses: indygreg/apple-code-sign-action@v1
         with:
@@ -163,17 +162,46 @@ jobs:
           p12_password: ${{ secrets.certificate_password }}
           app_store_connect_api_key_json_file: .appstoreconnect_key.json
 
-      - name: Zip macOS app bundle
+      - name: Re-sign macOS updater bundle after notarization
         if: runner.os == 'macOS'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           cd src-tauri/target/release/bundle/macos
-          ditto -c -k --sequesterRsrc --keepParent Karto.app Karto.app.zip
+          tar czf Karto.app.tar.gz Karto.app
+          npx tauri signer sign Karto.app.tar.gz \
+            --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
+            --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
 
-      - name: Upload app bundle
+      - name: Upload macOS updater artifacts
+        if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.artifact_path }}
+          name: updater-darwin-aarch64
+          path: |
+            src-tauri/target/release/bundle/macos/Karto.app.tar.gz
+            src-tauri/target/release/bundle/macos/Karto.app.tar.gz.sig
+          if-no-files-found: error
+
+      - name: Upload Linux updater artifacts
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-linux-x86_64
+          path: |
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/appimage/*.AppImage.sig
+          if-no-files-found: error
+
+      - name: Upload Windows updater artifacts
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-windows-x86_64
+          path: |
+            src-tauri/target/release/bundle/nsis/*-setup.exe
+            src-tauri/target/release/bundle/nsis/*-setup.exe.sig
           if-no-files-found: error
 
   release:
@@ -183,12 +211,27 @@ jobs:
     needs: build_app
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
+      - name: Generate latest.json
+        run: node .github/scripts/generate-latest-json.mjs
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          files: artifacts/**/*
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.AppImage
+            artifacts/**/*-setup.exe
+            latest.json
