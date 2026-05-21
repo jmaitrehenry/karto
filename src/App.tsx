@@ -2305,6 +2305,9 @@ function LogsView({
   status: LoadState<null>;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
+  const [fontSize, setFontSize] = useState(11);
+  const decreaseFontSize = () => setFontSize((s) => Math.max(8, s - 1));
+  const increaseFontSize = () => setFontSize((s) => Math.min(20, s + 1));
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
@@ -2313,21 +2316,28 @@ function LogsView({
   return (
     <div className="logs-view">
       <div className="logs-toolbar">
-        <span>
-          {status.status === "loading"
-            ? "Connecting to log stream..."
-            : status.status === "error"
-            ? "Log stream failed"
-            : "Streaming live logs"}
+        <span className="logs-toolbar-status">
+          <span>
+            {status.status === "loading"
+              ? "Connecting to log stream..."
+              : status.status === "error"
+              ? "Log stream failed"
+              : "Streaming live logs"}
+          </span>
+          {status.status === "loading" ? <Loader2 className="spin" size={14} /> : null}
         </span>
-        {status.status === "loading" ? <Loader2 className="spin" size={14} /> : null}
+        <span className="logs-toolbar-controls">
+          <button className="yaml-font-btn" onClick={decreaseFontSize} aria-label="Decrease font size" disabled={fontSize <= 8}>−</button>
+          <span className="yaml-font-size">{fontSize}px</span>
+          <button className="yaml-font-btn" onClick={increaseFontSize} aria-label="Increase font size" disabled={fontSize >= 20}>+</button>
+        </span>
       </div>
 
       {status.status === "error" ? (
         <div className="logs-error">{status.message}</div>
       ) : null}
 
-      <pre className="logs-panel">
+      <pre className="logs-panel" style={{ fontSize }}>
         {lines.length === 0 && status.status !== "error" ? (
           <span className="logs-empty">Waiting for logs...</span>
         ) : (
