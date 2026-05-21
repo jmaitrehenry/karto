@@ -1792,7 +1792,7 @@ function NodeDetailsView({
   tab: "applications" | "pods";
   workloads: LoadState<NodeWorkloads | null>;
 }) {
-  if (workloads.status === "loading" && !workloads.data) {
+  if (workloads.status === "loading") {
     return (
       <div className="table-placeholder">
         <Loader2 className="spin" size={24} />
