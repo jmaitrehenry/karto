@@ -189,6 +189,32 @@ jobs:
             --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
             --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
 
+      - name: Recreate DMG from notarized app
+        if: runner.os == 'macOS'
+        run: |
+          DMG_PATH=$(ls src-tauri/target/release/bundle/dmg/*.dmg | head -1)
+          rm -f "$DMG_PATH"
+          DMG_STAGING=$(mktemp -d)
+          cp -R src-tauri/target/release/bundle/macos/Karto.app "$DMG_STAGING/"
+          ln -s /Applications "$DMG_STAGING/Applications"
+          hdiutil create \
+            -volname "Karto" \
+            -srcfolder "$DMG_STAGING" \
+            -ov -format UDZO \
+            "$DMG_PATH"
+          rm -rf "$DMG_STAGING"
+          echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
+
+      - name: Sign and notarize DMG
+        if: runner.os == 'macOS'
+        uses: indygreg/apple-code-sign-action@v1
+        with:
+          input_path: ${{ env.DMG_PATH }}
+          notarize: true
+          p12_file: certificate.p12
+          p12_password: ${{ secrets.certificate_password }}
+          app_store_connect_api_key_json_file: .appstoreconnect_key.json
+
       - name: Upload macOS updater artifacts
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
