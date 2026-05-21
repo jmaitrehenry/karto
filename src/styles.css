@@ -1122,6 +1122,18 @@ select {
   font-weight: 600;
 }
 
+.logs-toolbar-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.logs-toolbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .logs-panel {
   min-height: calc(100vh - 190px);
   max-height: calc(100vh - 190px);
