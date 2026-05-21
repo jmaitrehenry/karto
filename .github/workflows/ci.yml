@@ -197,6 +197,7 @@ jobs:
           path: |
             src-tauri/target/release/bundle/macos/Karto.app.tar.gz
             src-tauri/target/release/bundle/macos/Karto.app.tar.gz.sig
+            src-tauri/target/release/bundle/dmg/*.dmg
           if-no-files-found: error
 
       - name: Upload Linux updater artifacts
@@ -247,6 +248,7 @@ jobs:
         with:
           files: |
             artifacts/**/*.tar.gz
+            artifacts/**/*.dmg
             artifacts/**/*.AppImage
             artifacts/**/*-setup.exe
             latest.json
