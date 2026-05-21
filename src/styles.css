@@ -300,6 +300,35 @@ select {
   background: rgb(var(--text-rgb) / 0.08);
 }
 
+.cluster-nav {
+  padding: 0 6px 4px;
+}
+
+.cluster-nav button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: 0;
+  border-radius: 6px;
+  padding: 7px 10px;
+  color: var(--subtext-1);
+  background: transparent;
+  text-align: left;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cluster-nav button.selected {
+  background: rgb(var(--text-rgb) / 0.12);
+  color: var(--text);
+}
+
+.cluster-nav button:hover {
+  background: rgb(var(--text-rgb) / 0.08);
+}
+
 .namespace-panel {
   display: flex;
   flex: 2 1 0;
@@ -925,6 +954,37 @@ select {
   font-weight: 600;
 }
 
+.node-tabs {
+  margin-bottom: 4px;
+  align-self: flex-start;
+}
+
+.node-tabs button {
+  min-width: 110px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: rgb(var(--text-rgb) / 0.14);
+  color: var(--subtext-1);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.node-tabs button.active .tab-count {
+  background: rgb(var(--text-rgb) / 0.2);
+  color: var(--text);
+}
+
 .details-section {
   margin-top: 28px;
 }
@@ -985,6 +1045,14 @@ select {
 .details-table {
   width: 100%;
   border-collapse: collapse;
+}
+
+.details-table tr.clickable-row {
+  cursor: pointer;
+}
+
+.details-table tr.clickable-row:hover td {
+  background: rgb(var(--text-rgb) / 0.04);
 }
 
 .details-table th {

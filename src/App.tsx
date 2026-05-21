@@ -146,6 +146,16 @@ type EventSummary = {
   last_seen: string;
 };
 
+type NodeWorkloads = {
+  deployments: ResourceSummary[];
+  stateful_sets: ResourceSummary[];
+  daemon_sets: ResourceSummary[];
+  jobs: ResourceSummary[];
+  replica_sets: ResourceSummary[];
+  pods: ResourceSummary[];
+  all_pods: ResourceSummary[];
+};
+
 type DetailTab = "overview" | "logs" | "events" | "yaml" | "terminal" | "ports";
 type ThemeMode = "light" | "dark";
 
@@ -270,9 +280,19 @@ export function App() {
     status: "idle",
     data: ""
   });
-  const [resourceView, setResourceView] = useState<"applications" | "all">(
+  const [resourceView, setResourceView] = useState<"applications" | "all" | "nodes">(
     "applications"
   );
+  const [nodes, setNodes] = useState<LoadState<ResourceSummary[]>>({
+    status: "idle",
+    data: []
+  });
+  const [selectedNode, setSelectedNode] = useState<ResourceSummary | null>(null);
+  const [nodeTab, setNodeTab] = useState<"applications" | "pods">("applications");
+  const [nodeWorkloads, setNodeWorkloads] = useState<LoadState<NodeWorkloads | null>>({
+    status: "idle",
+    data: null
+  });
   const [query, setQuery] = useState("");
   const [clusterMenuOpen, setClusterMenuOpen] = useState(false);
   const clusterMenuRef = useRef<HTMLDivElement>(null);
@@ -355,9 +375,20 @@ export function App() {
   }, [selectedContext]);
 
   useEffect(() => {
-    if (!selectedContext) return;
+    if (!selectedContext || resourceView === "nodes") return;
     void loadResources(selectedContext, selectedNamespace);
   }, [selectedContext, selectedNamespace, resourceView]);
+
+  useEffect(() => {
+    if (!selectedContext || resourceView !== "nodes") return;
+    void loadNodes(selectedContext);
+  }, [selectedContext, resourceView]);
+
+  useEffect(() => {
+    if (!selectedContext || !selectedNode) return;
+    setNodeTab("applications");
+    void loadNodeWorkloads(selectedContext, selectedNode.name);
+  }, [selectedContext, selectedNode]);
 
   useEffect(() => {
     if (!selectedContext || !selectedCrd) return;
@@ -369,6 +400,8 @@ export function App() {
     setResourceHistory([]);
     setSelectedCrd(null);
     setSelectedCustomResource(null);
+    setSelectedNode(null);
+    setNodeWorkloads({ status: "idle", data: null });
     setDetails({ status: "idle", data: null });
     setActiveDetailTab("overview");
     setLogLines([]);
@@ -596,6 +629,31 @@ export function App() {
         data: [],
         message: String(error)
       });
+    }
+  }
+
+  async function loadNodes(context: string) {
+    setNodes((current) => ({ status: "loading", data: current.data }));
+
+    try {
+      const nextNodes = await invoke<ResourceSummary[]>("list_nodes", { context });
+      setNodes({ status: "idle", data: nextNodes });
+    } catch (error) {
+      setNodes({ status: "error", data: [], message: String(error) });
+    }
+  }
+
+  async function loadNodeWorkloads(context: string, nodeName: string) {
+    setNodeWorkloads((current) => ({ status: "loading", data: current.data }));
+
+    try {
+      const workloads = await invoke<NodeWorkloads>("get_node_workloads", {
+        context,
+        nodeName
+      });
+      setNodeWorkloads({ status: "idle", data: workloads });
+    } catch (error) {
+      setNodeWorkloads({ status: "error", data: null, message: String(error) });
     }
   }
 
@@ -827,6 +885,11 @@ export function App() {
     setSelectedResource(previous);
   }
 
+  function navigateBackFromNode() {
+    setSelectedNode(null);
+    setNodeWorkloads({ status: "idle", data: null });
+  }
+
   function toggleCrdGroup(group: string) {
     setExpandedCrdGroups((current) => {
       const next = new Set(current);
@@ -915,6 +978,24 @@ export function App() {
           </p>
         </section>
 
+        <nav className="cluster-nav">
+          <button
+            className={resourceView === "nodes" ? "selected" : ""}
+            onClick={() => {
+              setResourceView("nodes");
+              setSelectedNamespace("");
+              setSelectedNode(null);
+              setSelectedResource(null);
+              setSelectedCrd(null);
+              setSelectedCustomResource(null);
+            }}
+            type="button"
+          >
+            <Server size={16} />
+            <span>Nodes</span>
+          </button>
+        </nav>
+
         <section className="namespace-panel">
           <div className="panel-heading">
             <span>Namespaces</span>
@@ -932,11 +1013,12 @@ export function App() {
           ) : (
             <div className="namespace-list">
               <button
-                className={!selectedNamespace && !selectedCrd ? "selected" : ""}
+                className={!selectedNamespace && !selectedCrd && resourceView !== "nodes" ? "selected" : ""}
                 onClick={() => {
                   setSelectedNamespace("");
                   setSelectedCrd(null);
                   setSelectedResource(null);
+                  if (resourceView === "nodes") setResourceView("applications");
                 }}
                 type="button"
               >
@@ -946,13 +1028,14 @@ export function App() {
               {namespaces.data.map((namespace) => (
                 <button
                   className={
-                    namespace.name === selectedNamespace ? "selected" : ""
+                    namespace.name === selectedNamespace && resourceView !== "nodes" ? "selected" : ""
                   }
                   key={namespace.name}
                   onClick={() => {
                     setSelectedNamespace(namespace.name);
                     setSelectedCrd(null);
                     setSelectedResource(null);
+                    if (resourceView === "nodes") setResourceView("applications");
                   }}
                   type="button"
                 >
@@ -1105,6 +1188,32 @@ export function App() {
               <span className="dot online" />
               {customResources.data.count} {selectedCrd.kind}
               {customResources.data.count === 1 ? "" : "s"}
+            </div>
+          ) : selectedNode ? (
+            <div
+              className="segmented detail-tabs"
+              onPointerDown={(event) => event.stopPropagation()}
+              role="tablist"
+            >
+              <button
+                className={nodeTab === "applications" ? "active" : ""}
+                onClick={() => setNodeTab("applications")}
+                type="button"
+              >
+                Applications
+              </button>
+              <button
+                className={nodeTab === "pods" ? "active" : ""}
+                onClick={() => setNodeTab("pods")}
+                type="button"
+              >
+                Pods
+              </button>
+            </div>
+          ) : resourceView === "nodes" ? (
+            <div className="crumb">
+              <Server size={19} />
+              <span>Nodes</span>
             </div>
           ) : (
             <div
@@ -1336,8 +1445,14 @@ export function App() {
               onPointerDown={(event) => event.stopPropagation()}
               onClick={() => {
                 if (selectedContext) void loadNamespaces(selectedContext);
-                if (selectedContext) {
+                if (selectedContext && resourceView !== "nodes") {
                   void loadResources(selectedContext, selectedNamespace);
+                }
+                if (selectedContext && resourceView === "nodes") {
+                  void loadNodes(selectedContext);
+                }
+                if (selectedContext && selectedNode) {
+                  void loadNodeWorkloads(selectedContext, selectedNode.name);
                 }
                 if (selectedContext && selectedCrd && !selectedCustomResource) {
                   void loadCustomResources(selectedContext, selectedCrd);
@@ -1373,11 +1488,11 @@ export function App() {
           </div>
         </header>
 
-        <div className={selectedResource || selectedCustomResource ? "subbar detail-subbar" : "subbar"}>
-          {selectedResource || selectedCustomResource ? null : (
+        <div className={selectedResource || selectedCustomResource || selectedNode ? "subbar detail-subbar" : "subbar"}>
+          {selectedResource || selectedCustomResource || selectedNode ? null : (
             <div>
               <h1>
-                {selectedCrd?.kind ?? (selectedNamespace || "All namespaces")}
+                {selectedCrd?.kind ?? (resourceView === "nodes" ? "Nodes" : (selectedNamespace || "All namespaces"))}
               </h1>
               <p>
                 {selectedCrd
@@ -1395,7 +1510,7 @@ export function App() {
               type="button"
             >
               <List size={15} />
-              {resourceHistory.length > 0 ? "Back" : "Back to resources"}
+              {resourceHistory.length > 0 ? "Back" : selectedNode ? "Back to node" : "Back to resources"}
             </button>
           ) : selectedCustomResource ? (
             <button
@@ -1405,6 +1520,15 @@ export function App() {
             >
               <List size={15} />
               {`Back to ${selectedCustomResource.crd.kind}`}
+            </button>
+          ) : selectedNode ? (
+            <button
+              className="back-button"
+              onClick={navigateBackFromNode}
+              type="button"
+            >
+              <List size={15} />
+              Back to nodes
             </button>
           ) : selectedCrd ? (
             <button
@@ -1434,7 +1558,7 @@ export function App() {
             title="Kubeconfig is not ready"
             detail={contexts.message}
           />
-        ) : resources.status === "error" ? (
+        ) : resources.status === "error" && resourceView !== "nodes" ? (
           <EmptyState
             icon={<CircleAlert size={28} />}
             title="Resources unavailable"
@@ -1474,6 +1598,20 @@ export function App() {
             onOpenResource={(resource) => openResource(resource, true)}
             targetContainerRef={pendingContainerRef}
             yaml={yaml}
+          />
+        ) : selectedNode ? (
+          <NodeDetailsView
+            node={selectedNode}
+            tab={nodeTab}
+            workloads={nodeWorkloads}
+            onOpenResource={(resource) => openResource(resource, false)}
+          />
+        ) : resourceView === "nodes" ? (
+          <NodeListView
+            loading={nodes.status === "loading"}
+            nodes={nodes.status === "error" ? [] : nodes.data}
+            error={nodes.status === "error" ? nodes.message : undefined}
+            onSelectNode={setSelectedNode}
           />
         ) : (
           <ResourceTable
@@ -1561,6 +1699,236 @@ function ResourceTable({
         </tbody>
       </table>
     </div>
+  );
+}
+
+function NodeListView({
+  error,
+  loading,
+  nodes,
+  onSelectNode
+}: {
+  error?: string;
+  loading: boolean;
+  nodes: ResourceSummary[];
+  onSelectNode: (node: ResourceSummary) => void;
+}) {
+  if (loading) {
+    return (
+      <div className="table-placeholder">
+        <Loader2 className="spin" size={24} />
+        <span>Loading nodes from the cluster...</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <EmptyState
+        icon={<CircleAlert size={28} />}
+        title="Nodes unavailable"
+        detail={error}
+      />
+    );
+  }
+
+  if (nodes.length === 0) {
+    return (
+      <EmptyState
+        icon={<Server size={28} />}
+        title="No nodes found"
+        detail="No nodes were found in this cluster."
+      />
+    );
+  }
+
+  return (
+    <div className="resource-table-wrap">
+      <table className="resource-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Status</th>
+            <th>Version</th>
+            <th>Age</th>
+          </tr>
+        </thead>
+        <tbody>
+          {nodes.map((node) => (
+            <tr
+              className="clickable-row"
+              key={node.name}
+              onClick={() => onSelectNode(node)}
+            >
+              <td>
+                <span className="resource-name">
+                  <Server size={15} />
+                  {node.name}
+                </span>
+              </td>
+              <td>
+                <span className={`status ${statusTone(node.status)}`}>
+                  {node.status}
+                </span>
+              </td>
+              <td>{node.ready ?? "-"}</td>
+              <td>{node.age ?? "-"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function NodeDetailsView({
+  node,
+  onOpenResource,
+  tab,
+  workloads
+}: {
+  node: ResourceSummary;
+  onOpenResource: (resource: ResourceSummary) => void;
+  tab: "applications" | "pods";
+  workloads: LoadState<NodeWorkloads | null>;
+}) {
+  if (workloads.status === "loading" && !workloads.data) {
+    return (
+      <div className="table-placeholder">
+        <Loader2 className="spin" size={24} />
+        <span>Loading workloads for {node.name}...</span>
+      </div>
+    );
+  }
+
+  if (workloads.status === "error") {
+    return (
+      <EmptyState
+        icon={<CircleAlert size={28} />}
+        title="Workloads unavailable"
+        detail={workloads.message}
+      />
+    );
+  }
+
+  const data = workloads.data;
+  if (!data) return null;
+
+  const appCount =
+    data.deployments.length +
+    data.stateful_sets.length +
+    data.daemon_sets.length +
+    data.jobs.length +
+    data.replica_sets.length +
+    data.pods.length;
+
+  return (
+    <div className="details-view">
+      <div className="details-header">
+        <div>
+          <h1>{node.name}</h1>
+          <p>Node</p>
+        </div>
+        <div className="details-status">
+          <span className={`status ${statusTone(node.status)}`}>{node.status}</span>
+          {node.ready ? <span>{node.ready}</span> : null}
+        </div>
+      </div>
+
+      {tab === "applications" ? (
+        <>
+          {data.deployments.length > 0 ? (
+            <section className="details-section">
+              <h2>Deployments</h2>
+              <NodeWorkloadTable resources={data.deployments} onOpenResource={onOpenResource} />
+            </section>
+          ) : null}
+
+          {data.stateful_sets.length > 0 ? (
+            <section className="details-section">
+              <h2>StatefulSets</h2>
+              <NodeWorkloadTable resources={data.stateful_sets} onOpenResource={onOpenResource} />
+            </section>
+          ) : null}
+
+          {data.daemon_sets.length > 0 ? (
+            <section className="details-section">
+              <h2>DaemonSets</h2>
+              <NodeWorkloadTable resources={data.daemon_sets} onOpenResource={onOpenResource} />
+            </section>
+          ) : null}
+
+          {data.jobs.length > 0 ? (
+            <section className="details-section">
+              <h2>Jobs</h2>
+              <NodeWorkloadTable resources={data.jobs} onOpenResource={onOpenResource} />
+            </section>
+          ) : null}
+
+          {data.replica_sets.length > 0 ? (
+            <section className="details-section">
+              <h2>ReplicaSets</h2>
+              <NodeWorkloadTable resources={data.replica_sets} onOpenResource={onOpenResource} />
+            </section>
+          ) : null}
+
+          {data.pods.length > 0 ? (
+            <section className="details-section">
+              <h2>Standalone Pods</h2>
+              <NodeWorkloadTable resources={data.pods} onOpenResource={onOpenResource} />
+            </section>
+          ) : null}
+
+          {appCount === 0 ? (
+            <EmptyState
+              icon={<Layers3 size={28} />}
+              title="No workloads"
+              detail="No workloads are currently scheduled on this node."
+            />
+          ) : null}
+        </>
+      ) : (
+        <section className="details-section">
+          {data.all_pods.length === 0 ? (
+            <EmptyState
+              icon={<Layers3 size={28} />}
+              title="No pods"
+              detail="No pods are currently scheduled on this node."
+            />
+          ) : (
+            <NodeWorkloadTable resources={data.all_pods} onOpenResource={onOpenResource} />
+          )}
+        </section>
+      )}
+    </div>
+  );
+}
+
+function NodeWorkloadTable({
+  onOpenResource,
+  resources
+}: {
+  onOpenResource: (resource: ResourceSummary) => void;
+  resources: ResourceSummary[];
+}) {
+  return (
+    <DetailsTable
+      empty="No resources."
+      headers={["Namespace", "Name", "Ready", "Status", "Age"]}
+      onRowClick={(index) => onOpenResource(resources[index])}
+      rows={resources.map((r) => [
+        r.namespace ?? "-",
+        <span className="resource-name" key={r.name}>
+          {iconForKind(r.kind)}
+          {r.name}
+        </span>,
+        r.ready ?? "-",
+        <span className={`status ${statusTone(r.status)}`} key={`${r.name}-status`}>
+          {r.status}
+        </span>,
+        r.age ?? "-"
+      ])}
+    />
   );
 }
 
@@ -2899,7 +3267,11 @@ function EmptyState({
 }
 
 function iconForKind(kind: string) {
-  if (["Deployment", "StatefulSet", "DaemonSet"].includes(kind)) {
+  if (["Deployment", "StatefulSet", "DaemonSet", "ReplicaSet"].includes(kind)) {
+    return <Server size={15} />;
+  }
+
+  if (kind === "Node") {
     return <Server size={15} />;
   }
 
@@ -2941,6 +3313,10 @@ function statusTone(status: string) {
 
   if (["running", "active", "bound", "complete", "ready"].includes(normalized)) {
     return "good";
+  }
+
+  if (["notready", "failed", "error"].includes(normalized)) {
+    return "bad";
   }
 
   if (["pending", "progressing", "unknown"].includes(normalized)) {

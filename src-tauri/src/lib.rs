@@ -2,10 +2,11 @@ use futures_util::{io::AsyncBufReadExt, SinkExt, StreamExt};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use k8s_openapi::{
     api::{
-        apps::v1::{DaemonSet, Deployment, StatefulSet},
+        apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet},
         batch::v1::{CronJob, Job},
         core::v1::{
-            ConfigMap, Event as CoreEvent, Namespace, PersistentVolumeClaim, Pod, Secret, Service,
+            ConfigMap, Event as CoreEvent, Namespace, Node, PersistentVolumeClaim, Pod, Secret,
+            Service,
         },
         networking::v1::Ingress,
     },
@@ -18,7 +19,7 @@ use kube::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     env,
     process::Command,
     sync::{Arc, Mutex, OnceLock},
@@ -208,6 +209,17 @@ struct ExecSessionInfo {
 
 #[derive(Default, Clone)]
 struct ExecSessions(Arc<Mutex<HashMap<String, ExecHandle>>>);
+
+#[derive(Debug, Serialize)]
+struct NodeWorkloads {
+    deployments: Vec<ResourceSummary>,
+    stateful_sets: Vec<ResourceSummary>,
+    daemon_sets: Vec<ResourceSummary>,
+    jobs: Vec<ResourceSummary>,
+    replica_sets: Vec<ResourceSummary>,
+    pods: Vec<ResourceSummary>,
+    all_pods: Vec<ResourceSummary>,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -413,6 +425,161 @@ async fn list_resources(
     });
 
     Ok(resources)
+}
+
+#[tauri::command]
+async fn list_nodes(context: String) -> Result<Vec<ResourceSummary>, String> {
+    let client = client_for_context(&context).await?;
+    let api: Api<Node> = Api::all(client);
+    let list = api.list(&ListParams::default()).await.map_err(kube_error)?;
+
+    let mut nodes = list.items.into_iter().map(node_summary).collect::<Vec<_>>();
+    nodes.sort_by(|l, r| l.name.cmp(&r.name));
+    Ok(nodes)
+}
+
+#[tauri::command]
+async fn get_node_workloads(
+    context: String,
+    node_name: String,
+) -> Result<NodeWorkloads, String> {
+    let client = client_for_context(&context).await?;
+
+    // All pods scheduled on this node
+    let pod_api: Api<Pod> = Api::all(client.clone());
+    let pod_list = pod_api
+        .list(&ListParams::default().fields(&format!("spec.nodeName={}", node_name)))
+        .await
+        .map_err(kube_error)?;
+
+    // All ReplicaSets to resolve their Deployment owners
+    let rs_api: Api<ReplicaSet> = Api::all(client.clone());
+    let all_rs = rs_api.list(&ListParams::default()).await.map_err(kube_error)?;
+    let rs_map: HashMap<(String, String), ReplicaSet> = all_rs
+        .items
+        .into_iter()
+        .map(|rs| ((rs.namespace().unwrap_or_default(), rs.name_any()), rs))
+        .collect();
+
+    let mut standalone_pods: Vec<ResourceSummary> = Vec::new();
+    let mut deployment_refs: HashSet<(String, String)> = HashSet::new();
+    let mut sts_refs: HashSet<(String, String)> = HashSet::new();
+    let mut ds_refs: HashSet<(String, String)> = HashSet::new();
+    let mut job_refs: HashSet<(String, String)> = HashSet::new();
+    let mut rs_refs: HashSet<(String, String)> = HashSet::new();
+
+    for pod in &pod_list.items {
+        let ns = pod.namespace().unwrap_or_default();
+        let owners = pod.owner_references();
+
+        if owners.is_empty() {
+            standalone_pods.push(pod_summary(pod.clone(), "Pod"));
+            continue;
+        }
+
+        let mut found_controller = false;
+
+        for owner in owners {
+            match owner.kind.as_str() {
+                "ReplicaSet" => {
+                    found_controller = true;
+                    let rs_key = (ns.clone(), owner.name.clone());
+                    if let Some(rs) = rs_map.get(&rs_key) {
+                        if let Some(dep_owner) =
+                            rs.owner_references().iter().find(|o| o.kind == "Deployment")
+                        {
+                            deployment_refs.insert((ns.clone(), dep_owner.name.clone()));
+                        } else {
+                            rs_refs.insert(rs_key);
+                        }
+                    } else {
+                        rs_refs.insert(rs_key);
+                    }
+                }
+                "StatefulSet" => {
+                    found_controller = true;
+                    sts_refs.insert((ns.clone(), owner.name.clone()));
+                }
+                "DaemonSet" => {
+                    found_controller = true;
+                    ds_refs.insert((ns.clone(), owner.name.clone()));
+                }
+                "Job" => {
+                    found_controller = true;
+                    job_refs.insert((ns.clone(), owner.name.clone()));
+                }
+                _ => {}
+            }
+        }
+
+        if !found_controller {
+            standalone_pods.push(pod_summary(pod.clone(), "Pod"));
+        }
+    }
+
+    let mut deployments = Vec::new();
+    for (ns, name) in &deployment_refs {
+        let api: Api<Deployment> = Api::namespaced(client.clone(), ns);
+        if let Ok(dep) = api.get(name).await {
+            deployments.push(deployment_summary(dep, "Deployment"));
+        }
+    }
+    deployments.sort_by(|l, r| l.namespace.cmp(&r.namespace).then(l.name.cmp(&r.name)));
+
+    let mut stateful_sets = Vec::new();
+    for (ns, name) in &sts_refs {
+        let api: Api<StatefulSet> = Api::namespaced(client.clone(), ns);
+        if let Ok(sts) = api.get(name).await {
+            stateful_sets.push(stateful_set_summary(sts, "StatefulSet"));
+        }
+    }
+    stateful_sets.sort_by(|l, r| l.namespace.cmp(&r.namespace).then(l.name.cmp(&r.name)));
+
+    let mut daemon_sets = Vec::new();
+    for (ns, name) in &ds_refs {
+        let api: Api<DaemonSet> = Api::namespaced(client.clone(), ns);
+        if let Ok(ds) = api.get(name).await {
+            daemon_sets.push(daemon_set_summary(ds, "DaemonSet"));
+        }
+    }
+    daemon_sets.sort_by(|l, r| l.namespace.cmp(&r.namespace).then(l.name.cmp(&r.name)));
+
+    let mut jobs = Vec::new();
+    for (ns, name) in &job_refs {
+        let api: Api<Job> = Api::namespaced(client.clone(), ns);
+        if let Ok(job) = api.get(name).await {
+            jobs.push(job_summary(job, "Job"));
+        }
+    }
+    jobs.sort_by(|l, r| l.namespace.cmp(&r.namespace).then(l.name.cmp(&r.name)));
+
+    let mut replica_sets = Vec::new();
+    for (ns, name) in &rs_refs {
+        let api: Api<ReplicaSet> = Api::namespaced(client.clone(), ns);
+        if let Ok(rs) = api.get(name).await {
+            replica_sets.push(replica_set_summary(rs, "ReplicaSet"));
+        }
+    }
+    replica_sets.sort_by(|l, r| l.namespace.cmp(&r.namespace).then(l.name.cmp(&r.name)));
+
+    standalone_pods.sort_by(|l, r| l.namespace.cmp(&r.namespace).then(l.name.cmp(&r.name)));
+
+    let mut all_pods = pod_list
+        .items
+        .into_iter()
+        .map(|pod| pod_summary(pod, "Pod"))
+        .collect::<Vec<_>>();
+    all_pods.sort_by(|l, r| l.namespace.cmp(&r.namespace).then(l.name.cmp(&r.name)));
+
+    Ok(NodeWorkloads {
+        deployments,
+        stateful_sets,
+        daemon_sets,
+        jobs,
+        replica_sets,
+        pods: standalone_pods,
+        all_pods,
+    })
 }
 
 #[tauri::command]
@@ -870,6 +1037,16 @@ async fn get_workload_yaml(
             let api: Api<PersistentVolumeClaim> = Api::namespaced(client, &namespace);
             let pvc = api.get(&name).await.map_err(kube_error)?;
             serde_yaml::to_string(&pvc).map_err(|error| error.to_string())
+        }
+        "Node" => {
+            let api: Api<Node> = Api::all(client);
+            let node = api.get(&name).await.map_err(kube_error)?;
+            serde_yaml::to_string(&node).map_err(|error| error.to_string())
+        }
+        "ReplicaSet" => {
+            let api: Api<ReplicaSet> = Api::namespaced(client, &namespace);
+            let rs = api.get(&name).await.map_err(kube_error)?;
+            serde_yaml::to_string(&rs).map_err(|error| error.to_string())
         }
         _ => Err(format!("YAML is not available for kind `{}` yet.", kind)),
     }
@@ -2459,6 +2636,50 @@ fn daemon_set_summary(item: DaemonSet, kind: &'static str) -> ResourceSummary {
     workload_summary(item, kind, ready, desired)
 }
 
+fn node_summary(node: Node) -> ResourceSummary {
+    let ready_condition = node
+        .status
+        .as_ref()
+        .and_then(|s| s.conditions.as_ref())
+        .and_then(|conditions| conditions.iter().find(|c| c.type_ == "Ready"));
+
+    let status = match ready_condition.map(|c| c.status.as_str()) {
+        Some("True") => "Ready",
+        Some("False") => "NotReady",
+        _ => "Unknown",
+    };
+
+    let version = node
+        .status
+        .as_ref()
+        .and_then(|s| s.node_info.as_ref())
+        .map(|info| info.kubelet_version.clone())
+        .unwrap_or_default();
+
+    ResourceSummary {
+        name: node.name_any(),
+        namespace: None,
+        ready: if version.is_empty() { None } else { Some(version) },
+        status: status.to_string(),
+        age: age_for(&node),
+        kind: "Node".to_string(),
+    }
+}
+
+fn replica_set_summary(item: ReplicaSet, kind: &'static str) -> ResourceSummary {
+    let ready = item
+        .status
+        .as_ref()
+        .and_then(|s| s.ready_replicas)
+        .unwrap_or(0);
+    let desired = item
+        .spec
+        .as_ref()
+        .and_then(|s| s.replicas)
+        .unwrap_or(0);
+    workload_summary(item, kind, ready, desired)
+}
+
 fn workload_summary<K>(item: K, kind: &'static str, ready: i32, desired: i32) -> ResourceSummary
 where
     K: ResourceExt,
@@ -2638,7 +2859,9 @@ pub fn run() {
             list_workload_events,
             list_contexts,
             list_namespaces,
+            list_nodes,
             list_resources,
+            get_node_workloads,
             start_workload_log_stream,
             stop_log_stream,
             start_port_forward,
