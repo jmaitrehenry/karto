@@ -1,0 +1,851 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Karto — macOS Kubernetes Browser</title>
+  <meta name="description" content="A lightweight macOS desktop app for exploring Kubernetes clusters. Browse namespaces, inspect workloads, stream logs, and review events — without leaving your desktop." />
+  <meta property="og:title" content="Karto — macOS Kubernetes Browser" />
+  <meta property="og:description" content="A lightweight macOS desktop app for exploring Kubernetes clusters." />
+  <meta property="og:image" content="screenshots/workload-detail.png" />
+  <link rel="icon" type="image/png" href="icon.png" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0b0d13;
+      --bg-card:   #13161f;
+      --bg-hover:  #1a1e2a;
+      --border:    rgba(255,255,255,0.07);
+      --text:      #e8eaf0;
+      --text-muted:#8b90a4;
+      --blue:      #4f8ef7;
+      --cyan:      #3dd6c8;
+      --purple:    #8b5cf6;
+      --gradient:  linear-gradient(135deg, #4f8ef7 0%, #8b5cf6 60%, #3dd6c8 100%);
+      --radius:    12px;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── NAV ── */
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 2rem;
+      height: 60px;
+      background: rgba(11,13,19,0.85);
+      backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .nav-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+      color: var(--text);
+      font-weight: 700;
+      font-size: 1.1rem;
+      letter-spacing: -.01em;
+    }
+
+    .nav-brand img { width: 28px; height: 28px; border-radius: 6px; }
+
+    nav ul {
+      list-style: none;
+      display: flex;
+      gap: 2rem;
+    }
+
+    nav ul a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: .9rem;
+      transition: color .2s;
+    }
+
+    nav ul a:hover { color: var(--text); }
+
+    .nav-cta {
+      background: var(--gradient);
+      color: #fff !important;
+      padding: .4rem 1rem;
+      border-radius: 20px;
+      font-weight: 600;
+      font-size: .85rem !important;
+      transition: opacity .2s !important;
+    }
+
+    .nav-cta:hover { opacity: .85; }
+
+    /* ── HERO ── */
+    .hero {
+      text-align: center;
+      padding: 6rem 2rem 4rem;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 60% 40% at 50% -10%, rgba(79,142,247,.18) 0%, transparent 70%),
+        radial-gradient(ellipse 40% 30% at 80% 60%, rgba(61,214,200,.10) 0%, transparent 60%);
+      pointer-events: none;
+    }
+
+    .hero-logo {
+      width: 100px;
+      height: 100px;
+      border-radius: 22px;
+      margin: 0 auto 1.25rem;
+      display: block;
+      box-shadow: 0 0 60px rgba(79,142,247,.35), 0 20px 40px rgba(0,0,0,.5);
+    }
+
+    .hero h1 {
+      font-size: clamp(2.8rem, 6vw, 4.5rem);
+      font-weight: 800;
+      letter-spacing: -.03em;
+      line-height: 1.1;
+      background: var(--gradient);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: .75rem;
+    }
+
+    .hero-tagline {
+      font-size: clamp(1rem, 2.5vw, 1.3rem);
+      color: var(--text-muted);
+      max-width: 520px;
+      margin: 0 auto 2.25rem;
+    }
+
+    .hero-actions {
+      display: flex;
+      gap: 1rem;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-bottom: 3.5rem;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: .5rem;
+      padding: .75rem 1.75rem;
+      border-radius: 30px;
+      font-size: .95rem;
+      font-weight: 600;
+      text-decoration: none;
+      transition: all .2s;
+    }
+
+    .btn-primary {
+      background: var(--gradient);
+      color: #fff;
+      box-shadow: 0 4px 20px rgba(79,142,247,.35);
+    }
+
+    .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(79,142,247,.45); }
+
+    .btn-ghost {
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      background: var(--bg-card);
+    }
+
+    .btn-ghost:hover { border-color: rgba(255,255,255,.2); color: var(--text); background: var(--bg-hover); }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: .4rem;
+      padding: .3rem .8rem;
+      border-radius: 20px;
+      font-size: .78rem;
+      font-weight: 600;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      margin-bottom: 1.75rem;
+      background: var(--bg-card);
+    }
+
+    .badge-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--cyan);
+    }
+
+    /* ── SCREENSHOTS CAROUSEL ── */
+    .carousel-wrap {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 0 2rem;
+      position: relative;
+    }
+
+    .carousel-wrap::before {
+      content: "";
+      position: absolute;
+      inset: -60px -80px;
+      background: radial-gradient(ellipse at 50% 50%, rgba(79,142,247,.12) 0%, transparent 65%);
+      pointer-events: none;
+    }
+
+    .carousel {
+      position: relative;
+    }
+
+    .carousel-track {
+      position: relative;
+    }
+
+    .carousel-slide {
+      display: none;
+    }
+
+    .carousel-slide.active {
+      display: block;
+    }
+
+    .carousel-img-wrap {
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      box-shadow: 0 40px 80px rgba(0,0,0,.65), 0 0 0 1px rgba(255,255,255,.04);
+      background: #0f1117;
+    }
+
+    .carousel-img-wrap img {
+      width: 100%;
+      display: block;
+      border-radius: 13px;
+    }
+
+    .carousel-caption {
+      text-align: center;
+      margin-top: 1.25rem;
+      font-size: .85rem;
+      color: var(--text-muted);
+      min-height: 1.4em;
+    }
+
+    .carousel-dots {
+      display: flex;
+      justify-content: center;
+      gap: .5rem;
+      margin-top: 1.25rem;
+    }
+
+    .carousel-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--border);
+      border: none;
+      cursor: pointer;
+      transition: all .2s;
+      padding: 0;
+    }
+
+    .carousel-dot.active {
+      background: var(--blue);
+      width: 24px;
+      border-radius: 4px;
+    }
+
+    .carousel-arrows {
+      display: flex;
+      justify-content: center;
+      gap: .75rem;
+      margin-top: 1rem;
+    }
+
+    .carousel-arrow {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      width: 36px; height: 36px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all .2s;
+    }
+
+    .carousel-arrow:hover {
+      border-color: rgba(255,255,255,.2);
+      color: var(--text);
+      background: var(--bg-hover);
+    }
+
+    /* ── SECTIONS ── */
+    section {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 5rem 2rem;
+    }
+
+    .section-label {
+      font-size: .8rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .1em;
+      background: var(--gradient);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: .75rem;
+    }
+
+    .section-title {
+      font-size: clamp(1.8rem, 3.5vw, 2.5rem);
+      font-weight: 800;
+      letter-spacing: -.03em;
+      line-height: 1.2;
+      margin-bottom: 1rem;
+    }
+
+    .section-sub {
+      font-size: 1.05rem;
+      color: var(--text-muted);
+      max-width: 560px;
+      margin-bottom: 3rem;
+    }
+
+    /* ── FEATURE GRID ── */
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 1.25rem;
+    }
+
+    .feature-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.75rem;
+      transition: border-color .2s, transform .2s;
+    }
+
+    .feature-card:hover {
+      border-color: rgba(79,142,247,.3);
+      transform: translateY(-3px);
+    }
+
+    .feature-icon {
+      width: 44px; height: 44px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 1rem;
+      font-size: 1.25rem;
+    }
+
+    .fi-blue   { background: rgba(79,142,247,.12); }
+    .fi-cyan   { background: rgba(61,214,200,.12); }
+    .fi-purple { background: rgba(139,92,246,.12); }
+    .fi-green  { background: rgba(40,200,64,.12);  }
+    .fi-orange { background: rgba(255,160,50,.12); }
+    .fi-pink   { background: rgba(236,72,153,.12); }
+
+    .feature-card h3 {
+      font-size: 1rem;
+      font-weight: 700;
+      margin-bottom: .5rem;
+      letter-spacing: -.01em;
+    }
+
+    .feature-card p {
+      font-size: .88rem;
+      color: var(--text-muted);
+      line-height: 1.55;
+    }
+
+    /* ── TWO-COL ── */
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 3rem;
+      align-items: start;
+    }
+
+    @media (max-width: 720px) { .two-col { grid-template-columns: 1fr; } }
+
+    .check-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: .65rem;
+    }
+
+    .check-list li {
+      display: flex;
+      align-items: flex-start;
+      gap: .75rem;
+      font-size: .92rem;
+      color: var(--text-muted);
+    }
+
+    .check-list li svg { flex-shrink: 0; margin-top: 2px; }
+
+    /* ── STACK ── */
+    .stack-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .75rem;
+    }
+
+    .stack-chip {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: .6rem 1.1rem;
+      font-size: .85rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      transition: border-color .2s;
+    }
+
+    .stack-chip:hover { border-color: rgba(79,142,247,.4); color: var(--text); }
+
+    .stack-chip .chip-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+    }
+
+    /* ── CTA BAND ── */
+    .cta-band {
+      text-align: center;
+      padding: 5rem 2rem;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .cta-band::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse 70% 60% at 50% 50%, rgba(79,142,247,.1) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .cta-band h2 {
+      font-size: clamp(1.8rem, 4vw, 2.8rem);
+      font-weight: 800;
+      letter-spacing: -.03em;
+      margin-bottom: 1rem;
+    }
+
+    .cta-band p {
+      color: var(--text-muted);
+      max-width: 480px;
+      margin: 0 auto 2rem;
+      font-size: .95rem;
+    }
+
+    /* ── DIVIDER ── */
+    hr.div {
+      border: none;
+      border-top: 1px solid var(--border);
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    /* ── FOOTER ── */
+    footer {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 2.5rem 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+
+    .footer-brand {
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      text-decoration: none;
+      color: var(--text-muted);
+      font-size: .88rem;
+    }
+
+    .footer-brand img { width: 20px; height: 20px; border-radius: 4px; }
+
+    .footer-links {
+      display: flex;
+      gap: 1.5rem;
+      list-style: none;
+    }
+
+    .footer-links a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: .85rem;
+      transition: color .2s;
+    }
+
+    .footer-links a:hover { color: var(--text); }
+
+    footer small { color: var(--text-muted); font-size: .8rem; }
+
+    /* ── RESPONSIVE ── */
+    @media (max-width: 640px) {
+      nav ul { display: none; }
+      footer { flex-direction: column; align-items: flex-start; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── NAV ── -->
+<nav>
+  <a class="nav-brand" href="#">
+    <img src="icon.png" alt="Karto" />
+    Karto
+  </a>
+  <ul>
+    <li><a href="#screenshots">Screenshots</a></li>
+    <li><a href="#features">Features</a></li>
+    <li><a href="#stack">Stack</a></li>
+    <li><a href="https://github.com/jmaitrehenry/karto" class="nav-cta" target="_blank" rel="noopener">
+      GitHub ↗
+    </a></li>
+  </ul>
+</nav>
+
+<!-- ── HERO ── -->
+<header class="hero">
+  <img class="hero-logo" src="icon.png" alt="Karto logo" />
+  <h1>Karto</h1>
+  <p class="hero-tagline">
+    A lightweight desktop app for exploring Kubernetes clusters — without the complexity.
+  </p>
+  <div class="hero-actions">
+    <a class="btn btn-primary" href="https://github.com/jmaitrehenry/karto/releases/latest" target="_blank" rel="noopener">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Download
+    </a>
+    <a class="btn btn-ghost" href="https://github.com/jmaitrehenry/karto" target="_blank" rel="noopener">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+      View on GitHub
+    </a>
+  </div>
+
+  <div class="badge">
+    <span class="badge-dot"></span>
+    macOS · Windows · Linux · MIT License
+  </div>
+
+  <!-- Screenshots Carousel -->
+  <div id="screenshots" class="carousel-wrap">
+    <div class="carousel">
+      <div class="carousel-track">
+        <div class="carousel-slide active">
+          <div class="carousel-img-wrap">
+            <img src="screenshots/workload-detail.png" alt="Workload detail view showing deployment overview, pods, and services" />
+          </div>
+        </div>
+        <div class="carousel-slide">
+          <div class="carousel-img-wrap">
+            <img src="screenshots/nodes-list.png" alt="Nodes list view showing cluster nodes with status and version" />
+          </div>
+        </div>
+        <div class="carousel-slide">
+          <div class="carousel-img-wrap">
+            <img src="screenshots/node-detail.png" alt="Node detail view showing all deployments and pods running on a node" />
+          </div>
+        </div>
+        <div class="carousel-slide">
+          <div class="carousel-img-wrap">
+            <img src="screenshots/port-forwards.png" alt="Port forwards tab for creating and managing port forward sessions" />
+          </div>
+        </div>
+      </div>
+
+      <div class="carousel-dots">
+        <button class="carousel-dot active" data-index="0" aria-label="Workload detail"></button>
+        <button class="carousel-dot" data-index="1" aria-label="Nodes list"></button>
+        <button class="carousel-dot" data-index="2" aria-label="Node detail"></button>
+        <button class="carousel-dot" data-index="3" aria-label="Port forwards"></button>
+      </div>
+
+      <div class="carousel-caption" id="carousel-caption">Workload detail — deployment overview with pods, resources, and services</div>
+
+      <div class="carousel-arrows">
+        <button class="carousel-arrow" id="prev-btn" aria-label="Previous">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <button class="carousel-arrow" id="next-btn" aria-label="Next">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<hr class="div" />
+
+<!-- ── FEATURES ── -->
+<section id="features">
+  <div class="section-label">Features</div>
+  <h2 class="section-title">Everything you need to inspect a cluster</h2>
+  <p class="section-sub">Karto gives you a focused, read-only window into your Kubernetes workloads — fast to open, easy to navigate.</p>
+
+  <div class="feature-grid">
+
+    <div class="feature-card">
+      <div class="feature-icon fi-blue">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#4f8ef7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="9"/><line x1="12" y1="3" x2="12" y2="9"/><line x1="12" y1="15" x2="12" y2="21"/><line x1="3" y1="12" x2="9" y2="12"/><line x1="15" y1="12" x2="21" y2="12"/></svg>
+      </div>
+      <h3>Cluster Navigation</h3>
+      <p>Switch between kubeconfig contexts instantly. Browse all namespaces or focus on one, and toggle between application and resource views.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon fi-cyan">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#3dd6c8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+      </div>
+      <h3>Resource Browser</h3>
+      <p>Search and filter workloads by name, kind, or status. Inspect readiness, images, labels, annotations, pods, services, and resource limits at a glance.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon fi-green">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#28c840" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+      </div>
+      <h3>Live Log Streaming</h3>
+      <p>Tail logs from any container in real time — with timestamp display, container selection, and configurable font size.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon fi-purple">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+      </div>
+      <h3>Events &amp; YAML</h3>
+      <p>Review recent Kubernetes events for any workload, and read rendered, syntax-highlighted YAML for supported resources.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon fi-orange">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ffa032" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><polyline points="3 9 21 9"/><polyline points="9 21 9 9"/></svg>
+      </div>
+      <h3>Pod Terminal</h3>
+      <p>Open an interactive exec session directly inside any pod — powered by xterm.js for a real terminal experience, without leaving the app.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon fi-pink">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ec4899" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+      </div>
+      <h3>Port Forwarding</h3>
+      <p>Create and manage port forward sessions to any pod directly from the app. No kubectl commands needed — just point, click, and connect.</p>
+    </div>
+
+  </div>
+</section>
+
+<hr class="div" />
+
+<!-- ── USE CASES ── -->
+<section id="use-cases">
+  <div class="two-col">
+    <div>
+      <div class="section-label">Use Cases</div>
+      <h2 class="section-title">Built for inspection, not administration</h2>
+      <p class="section-sub">Karto is the right tool when you need to understand what's happening in a cluster without touching anything.</p>
+
+      <ul class="check-list">
+        <li>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#3dd6c8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          Verify what is running in a namespace and whether it's healthy
+        </li>
+        <li>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#3dd6c8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          Inspect workload health and related services end-to-end
+        </li>
+        <li>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#3dd6c8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          Watch live logs during an active debugging session
+        </li>
+        <li>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#3dd6c8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          Review recent Kubernetes events to find the root cause of an issue
+        </li>
+        <li>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#3dd6c8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          Explore Custom Resources exposed by operators in your cluster
+        </li>
+        <li>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#3dd6c8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          Read resource YAML without switching to the terminal
+        </li>
+      </ul>
+    </div>
+
+    <div>
+      <div class="section-label" style="margin-top:0">Non-goals</div>
+      <h2 class="section-title">What Karto doesn't do</h2>
+      <p class="section-sub">Keeping these off the table keeps the tool simple, safe, and fast to use.</p>
+
+      <ul class="check-list">
+        <li>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ff5f57" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          Does not create, edit, or delete Kubernetes resources
+        </li>
+        <li>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ff5f57" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          Does not manage or create kubeconfig files or contexts
+        </li>
+        <li>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ff5f57" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          Does not bypass Kubernetes RBAC — visibility depends on your existing access
+        </li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<hr class="div" />
+
+<!-- ── STACK ── -->
+<section id="stack">
+  <div class="section-label">Tech Stack</div>
+  <h2 class="section-title">Small by design</h2>
+  <p class="section-sub">Karto is built on a lean set of proven technologies — fast to compile, small to ship, and easy to contribute to.</p>
+
+  <div class="stack-grid">
+    <div class="stack-chip">
+      <span class="chip-dot" style="background:#4f8ef7"></span>
+      Tauri 2
+    </div>
+    <div class="stack-chip">
+      <span class="chip-dot" style="background:#61dbfb"></span>
+      React 19
+    </div>
+    <div class="stack-chip">
+      <span class="chip-dot" style="background:#3178c6"></span>
+      TypeScript 5
+    </div>
+    <div class="stack-chip">
+      <span class="chip-dot" style="background:#ce412b"></span>
+      Rust
+    </div>
+    <div class="stack-chip">
+      <span class="chip-dot" style="background:#3dd6c8"></span>
+      kube-rs
+    </div>
+    <div class="stack-chip">
+      <span class="chip-dot" style="background:#646cff"></span>
+      Vite 6
+    </div>
+    <div class="stack-chip">
+      <span class="chip-dot" style="background:#ffa032"></span>
+      xterm.js
+    </div>
+  </div>
+</section>
+
+<hr class="div" />
+
+<!-- ── CTA ── -->
+<section class="cta-band" style="max-width:100%; padding:5rem 2rem;">
+  <h2>Ready to explore your clusters?</h2>
+  <p>Download Karto for free, open your kubeconfig, and start inspecting in seconds.</p>
+  <div class="hero-actions">
+    <a class="btn btn-primary" href="https://github.com/jmaitrehenry/karto/releases/latest" target="_blank" rel="noopener">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Download
+    </a>
+    <a class="btn btn-ghost" href="https://github.com/jmaitrehenry/karto" target="_blank" rel="noopener">
+      View source on GitHub
+    </a>
+  </div>
+</section>
+
+<hr class="div" />
+
+<!-- ── FOOTER ── -->
+<footer>
+  <a class="footer-brand" href="#">
+    <img src="icon.png" alt="Karto" />
+    Karto
+  </a>
+  <ul class="footer-links">
+    <li><a href="https://github.com/jmaitrehenry/karto" target="_blank" rel="noopener">GitHub</a></li>
+    <li><a href="https://github.com/jmaitrehenry/karto/releases" target="_blank" rel="noopener">Releases</a></li>
+    <li><a href="https://github.com/jmaitrehenry/karto/issues" target="_blank" rel="noopener">Issues</a></li>
+    <li><a href="https://github.com/jmaitrehenry/karto/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a></li>
+  </ul>
+  <small>Built with Tauri, React &amp; Rust</small>
+</footer>
+
+<script>
+  const slides = document.querySelectorAll('.carousel-slide');
+  const dots   = document.querySelectorAll('.carousel-dot');
+  const caption = document.getElementById('carousel-caption');
+
+  const captions = [
+    'Workload detail — deployment overview with pods, resources, and services',
+    'Nodes view — cluster nodes with Kubernetes version and status',
+    'Node detail — all deployments and pods running on a single node',
+    'Port forwards — create and manage port forward sessions to any pod',
+  ];
+
+  let current = 0;
+  let timer;
+
+  function goTo(i) {
+    slides[current].classList.remove('active');
+    dots[current].classList.remove('active');
+    current = (i + slides.length) % slides.length;
+    slides[current].classList.add('active');
+    dots[current].classList.add('active');
+    caption.textContent = captions[current];
+  }
+
+  function startAuto() {
+    timer = setInterval(() => goTo(current + 1), 4500);
+  }
+
+  function resetAuto() {
+    clearInterval(timer);
+    startAuto();
+  }
+
+  document.getElementById('next-btn').addEventListener('click', () => { goTo(current + 1); resetAuto(); });
+  document.getElementById('prev-btn').addEventListener('click', () => { goTo(current - 1); resetAuto(); });
+
+  dots.forEach(dot => {
+    dot.addEventListener('click', () => { goTo(+dot.dataset.index); resetAuto(); });
+  });
+
+  startAuto();
+</script>
+
+</body>
+</html>
