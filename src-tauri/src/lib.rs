@@ -636,6 +636,7 @@ async fn list_crds(context: String) -> Result<Vec<CrdGroup>, String> {
 #[tauri::command]
 async fn list_custom_resources(
     context: String,
+    namespace: String,
     resource: CrdResource,
 ) -> Result<CustomResourceTable, String> {
     let client = client_for_context(&context).await?;
@@ -646,14 +647,20 @@ async fn list_custom_resources(
         kind: resource.kind.clone(),
         plural: resource.plural.clone(),
     };
-    let api: Api<DynamicObject> = Api::all_with(client, &api_resource);
+    let filter_ns = resource.scope == "Namespaced" && !namespace.is_empty();
+    let api: Api<DynamicObject> = if filter_ns {
+        Api::namespaced_with(client, &namespace, &api_resource)
+    } else {
+        Api::all_with(client, &api_resource)
+    };
     let list = api.list(&ListParams::default()).await.map_err(kube_error)?;
+    let show_namespace = !filter_ns;
     let mut rows = list
         .items
         .into_iter()
-        .map(|object| custom_resource_row(&resource, object))
+        .map(|object| custom_resource_row(&resource, object, show_namespace))
         .collect::<Vec<_>>();
-    let columns = custom_resource_columns(&resource);
+    let columns = custom_resource_columns(&resource, show_namespace);
 
     rows.sort_by(|left, right| {
         left.first()
@@ -2245,8 +2252,8 @@ fn event_summary(event: CoreEvent) -> EventSummary {
     }
 }
 
-fn custom_resource_columns(resource: &CrdResource) -> Vec<String> {
-    let mut columns = if resource.scope == "Namespaced" {
+fn custom_resource_columns(resource: &CrdResource, show_namespace: bool) -> Vec<String> {
+    let mut columns = if resource.scope == "Namespaced" && show_namespace {
         vec!["Namespace".to_string(), "Name".to_string()]
     } else {
         vec!["Name".to_string()]
@@ -2263,9 +2270,9 @@ fn custom_resource_columns(resource: &CrdResource) -> Vec<String> {
     columns
 }
 
-fn custom_resource_row(resource: &CrdResource, object: DynamicObject) -> Vec<String> {
+fn custom_resource_row(resource: &CrdResource, object: DynamicObject, show_namespace: bool) -> Vec<String> {
     let value = serde_json::to_value(&object).unwrap_or_default();
-    let mut row = if resource.scope == "Namespaced" {
+    let mut row = if resource.scope == "Namespaced" && show_namespace {
         vec![
             object.namespace().unwrap_or_else(|| "-".to_string()),
             object.name_any(),

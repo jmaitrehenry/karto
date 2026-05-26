@@ -246,13 +246,7 @@ export function App() {
   const [expandedCrdGroups, setExpandedCrdGroups] = useState<Set<string>>(
     () => new Set()
   );
-  const [selectedCrd, setSelectedCrd] = useState<CrdResource | null>(null);
-  const [customResources, setCustomResources] = useState<
-    LoadState<CustomResourceTable>
-  >({
-    status: "idle",
-    data: emptyCustomResources
-  });
+  const [crdInstances, setCrdInstances] = useState<Map<string, LoadState<CustomResourceTable>>>(new Map());
   const [selectedCustomResource, setSelectedCustomResource] = useState<{
     crd: CrdResource;
     name: string;
@@ -280,7 +274,7 @@ export function App() {
     status: "idle",
     data: ""
   });
-  const [resourceView, setResourceView] = useState<"applications" | "all" | "nodes">(
+  const [resourceView, setResourceView] = useState<"applications" | "all" | "crds" | "nodes">(
     "applications"
   );
   const [nodes, setNodes] = useState<LoadState<ResourceSummary[]>>({
@@ -311,9 +305,6 @@ export function App() {
   const pendingContainerRef = useRef<string | null>(null);
   const selectedResourceNamespace =
     selectedResource?.namespace ?? selectedNamespace;
-  const shouldShowCrdPanel =
-    crds.status === "loading" || crds.status === "error" || crds.data.length > 0;
-
   useEffect(() => {
     document.documentElement.dataset.theme = themeMode;
     document.documentElement.style.colorScheme = themeMode;
@@ -372,10 +363,11 @@ export function App() {
     setSelectedNamespace("");
     void loadNamespaces(selectedContext);
     void loadCrds(selectedContext);
+    setCrdInstances(new Map());
   }, [selectedContext]);
 
   useEffect(() => {
-    if (!selectedContext || resourceView === "nodes") return;
+    if (!selectedContext || resourceView === "nodes" || resourceView === "crds") return;
     void loadResources(selectedContext, selectedNamespace);
   }, [selectedContext, selectedNamespace, resourceView]);
 
@@ -391,14 +383,17 @@ export function App() {
   }, [selectedContext, selectedNode]);
 
   useEffect(() => {
-    if (!selectedContext || !selectedCrd) return;
-    void loadCustomResources(selectedContext, selectedCrd);
-  }, [selectedContext, selectedCrd]);
+    if (!selectedContext || resourceView !== "crds" || crds.status !== "idle") return;
+    setCrdInstances(new Map());
+    for (const group of crds.data) {
+      void loadCrdGroupInstances(selectedContext, selectedNamespace, group);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedContext, selectedNamespace, resourceView, crds.status]);
 
   useEffect(() => {
     setSelectedResource(null);
     setResourceHistory([]);
-    setSelectedCrd(null);
     setSelectedCustomResource(null);
     setSelectedNode(null);
     setNodeWorkloads({ status: "idle", data: null });
@@ -684,28 +679,45 @@ export function App() {
     }
   }
 
-  async function loadCustomResources(context: string, resource: CrdResource) {
-    setCustomResources((current) => ({
-      status: "loading",
-      data: current.data
-    }));
+  async function loadCrdGroupInstances(context: string, namespace: string, group: CrdGroup) {
+    const resources = namespace
+      ? group.resources.filter((r) => r.scope === "Namespaced")
+      : group.resources;
 
-    try {
-      const nextResources = await invoke<CustomResourceTable>(
-        "list_custom_resources",
-        {
-          context,
-          resource
+    setCrdInstances((current) => {
+      const next = new Map(current);
+      for (const resource of resources) {
+        next.set(`${resource.group}/${resource.kind}`, {
+          status: "loading",
+          data: emptyCustomResources
+        });
+      }
+      return next;
+    });
+
+    await Promise.all(
+      resources.map(async (resource) => {
+        const key = `${resource.group}/${resource.kind}`;
+        try {
+          const table = await invoke<CustomResourceTable>("list_custom_resources", {
+            context,
+            namespace,
+            resource
+          });
+          setCrdInstances((current) => {
+            const next = new Map(current);
+            next.set(key, { status: "idle", data: table });
+            return next;
+          });
+        } catch (error) {
+          setCrdInstances((current) => {
+            const next = new Map(current);
+            next.set(key, { status: "error", data: emptyCustomResources, message: String(error) });
+            return next;
+          });
         }
-      );
-      setCustomResources({ status: "idle", data: nextResources });
-    } catch (error) {
-      setCustomResources({
-        status: "error",
-        data: emptyCustomResources,
-        message: String(error)
-      });
-    }
+      })
+    );
   }
 
   async function loadCustomResourceDetails(
@@ -893,13 +905,11 @@ export function App() {
   function toggleCrdGroup(group: string) {
     setExpandedCrdGroups((current) => {
       const next = new Set(current);
-
       if (next.has(group)) {
         next.delete(group);
       } else {
         next.add(group);
       }
-
       return next;
     });
   }
@@ -986,7 +996,6 @@ export function App() {
               setSelectedNamespace("");
               setSelectedNode(null);
               setSelectedResource(null);
-              setSelectedCrd(null);
               setSelectedCustomResource(null);
             }}
             type="button"
@@ -1013,10 +1022,9 @@ export function App() {
           ) : (
             <div className="namespace-list">
               <button
-                className={!selectedNamespace && !selectedCrd && resourceView !== "nodes" ? "selected" : ""}
+                className={!selectedNamespace && resourceView !== "nodes" ? "selected" : ""}
                 onClick={() => {
                   setSelectedNamespace("");
-                  setSelectedCrd(null);
                   setSelectedResource(null);
                   if (resourceView === "nodes") setResourceView("applications");
                 }}
@@ -1033,7 +1041,6 @@ export function App() {
                   key={namespace.name}
                   onClick={() => {
                     setSelectedNamespace(namespace.name);
-                    setSelectedCrd(null);
                     setSelectedResource(null);
                     if (resourceView === "nodes") setResourceView("applications");
                   }}
@@ -1047,66 +1054,6 @@ export function App() {
           )}
         </section>
 
-        {shouldShowCrdPanel ? (
-          <section className="crd-panel">
-            <div className="panel-heading">
-              <span>Custom Resources</span>
-              {crds.status === "loading" ? <Loader2 className="spin" size={14} /> : null}
-            </div>
-
-            {crds.status === "error" ? (
-              <EmptyState
-                icon={<CircleAlert size={18} />}
-                title="CRDs unavailable"
-                detail={crds.message}
-              />
-            ) : (
-              <div className="crd-list">
-                {crds.data.map((group) => (
-                  <div className="crd-group" key={group.group}>
-                    <button
-                      className="crd-group-title"
-                      onClick={() => toggleCrdGroup(group.group)}
-                      type="button"
-                    >
-                      <img
-                        alt=""
-                        className="crd-favicon"
-                        src={faviconUrlForCrdGroup(group.group)}
-                      />
-                      <span>{group.group}</span>
-                      {expandedCrdGroups.has(group.group) ? (
-                        <ChevronDown size={15} />
-                      ) : (
-                        <ChevronRight size={15} />
-                      )}
-                    </button>
-                    {expandedCrdGroups.has(group.group)
-                      ? group.resources.map((resource) => (
-                          <button
-                            className={
-                              selectedCrd?.group === resource.group &&
-                              selectedCrd?.kind === resource.kind
-                                ? "selected"
-                                : ""
-                            }
-                            key={`${resource.group}-${resource.kind}`}
-                            onClick={() => {
-                              setSelectedResource(null);
-                              setSelectedCrd(resource);
-                            }}
-                            type="button"
-                          >
-                            {resource.kind}
-                          </button>
-                        ))
-                      : null}
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-        ) : null}
       </aside>
 
       <section className="content">
@@ -1121,9 +1068,7 @@ export function App() {
             <div className="crumb">
               <Cloud size={19} />
               <span>
-                {selectedCrd
-                  ? `${selectedCrd.group} / ${selectedCrd.kind}`
-                  : selectedNamespace || "All namespaces"}
+                {resourceView === "crds" ? "Custom Resources" : selectedNamespace || "All namespaces"}
               </span>
             </div>
           )}
@@ -1183,12 +1128,6 @@ export function App() {
                 </button>
               ) : null}
             </div>
-          ) : selectedCrd ? (
-            <div className="resource-count">
-              <span className="dot online" />
-              {customResources.data.count} {selectedCrd.kind}
-              {customResources.data.count === 1 ? "" : "s"}
-            </div>
           ) : selectedNode ? (
             <div
               className="segmented detail-tabs"
@@ -1234,6 +1173,13 @@ export function App() {
                 type="button"
               >
                 All Resources
+              </button>
+              <button
+                className={resourceView === "crds" ? "active" : ""}
+                onClick={() => setResourceView("crds")}
+                type="button"
+              >
+                Custom Resources
               </button>
             </div>
           )}
@@ -1445,7 +1391,7 @@ export function App() {
               onPointerDown={(event) => event.stopPropagation()}
               onClick={() => {
                 if (selectedContext) void loadNamespaces(selectedContext);
-                if (selectedContext && resourceView !== "nodes") {
+                if (selectedContext && resourceView !== "nodes" && resourceView !== "crds") {
                   void loadResources(selectedContext, selectedNamespace);
                 }
                 if (selectedContext && resourceView === "nodes") {
@@ -1454,8 +1400,11 @@ export function App() {
                 if (selectedContext && selectedNode) {
                   void loadNodeWorkloads(selectedContext, selectedNode.name);
                 }
-                if (selectedContext && selectedCrd && !selectedCustomResource) {
-                  void loadCustomResources(selectedContext, selectedCrd);
+                if (selectedContext && resourceView === "crds" && !selectedCustomResource) {
+                  setCrdInstances(new Map());
+                  for (const group of crds.data) {
+                    void loadCrdGroupInstances(selectedContext, selectedNamespace, group);
+                  }
                 }
                 if (selectedContext && selectedResourceNamespace && selectedResource) {
                   void loadDetails(selectedContext, selectedResourceNamespace, selectedResource);
@@ -1492,14 +1441,12 @@ export function App() {
           {selectedResource || selectedCustomResource || selectedNode ? null : (
             <div>
               <h1>
-                {selectedCrd?.kind ?? (resourceView === "nodes" ? "Nodes" : (selectedNamespace || "All namespaces"))}
+                {resourceView === "nodes" ? "Nodes" : resourceView === "crds" ? "Custom Resources" : (selectedNamespace || "All namespaces")}
               </h1>
               <p>
-                {selectedCrd
-                  ? `${selectedCrd.group}/${selectedCrd.version}`
-                  : selectedContext
-                    ? `Context ${selectedContext}`
-                    : "Select an existing kubeconfig context to begin."}
+                {selectedContext
+                  ? `Context ${selectedContext}`
+                  : "Select an existing kubeconfig context to begin."}
               </p>
             </div>
           )}
@@ -1530,15 +1477,8 @@ export function App() {
               <List size={15} />
               Back to nodes
             </button>
-          ) : selectedCrd ? (
-            <button
-              className="back-button"
-              onClick={() => setSelectedCrd(null)}
-              type="button"
-            >
-              <List size={15} />
-              Back to namespaces
-            </button>
+          ) : resourceView === "crds" ? (
+            null
           ) : (
             <label className="search">
               <Search size={16} />
@@ -1558,7 +1498,7 @@ export function App() {
             title="Kubeconfig is not ready"
             detail={contexts.message}
           />
-        ) : resources.status === "error" && resourceView !== "nodes" ? (
+        ) : resources.status === "error" && resourceView !== "nodes" && resourceView !== "crds" ? (
           <EmptyState
             icon={<CircleAlert size={28} />}
             title="Resources unavailable"
@@ -1578,11 +1518,6 @@ export function App() {
             onOpenResource={(resource) => openResource(resource, true)}
             targetContainerRef={pendingContainerRef}
             yaml={yaml}
-          />
-        ) : selectedCrd ? (
-          <CustomResourceTableView
-            onRowClick={(name, namespace) => setSelectedCustomResource({ crd: selectedCrd, name, namespace })}
-            table={customResources}
           />
         ) : selectedResource ? (
           <WorkloadDetailsView
@@ -1612,6 +1547,17 @@ export function App() {
             nodes={nodes.status === "error" ? [] : nodes.data}
             error={nodes.status === "error" ? nodes.message : undefined}
             onSelectNode={setSelectedNode}
+          />
+        ) : resourceView === "crds" ? (
+          <CrdBrowserView
+            crds={crds}
+            crdInstances={crdInstances}
+            currentNamespace={selectedNamespace}
+            expandedGroups={expandedCrdGroups}
+            onToggleGroup={toggleCrdGroup}
+            onSelectResource={(crd, name, namespace) =>
+              setSelectedCustomResource({ crd, name, namespace })
+            }
           />
         ) : (
           <ResourceTable
@@ -1932,14 +1878,59 @@ function NodeWorkloadTable({
   );
 }
 
-function CustomResourceTableView({
-  onRowClick,
-  table
+function CrdBrowserView({
+  crds,
+  crdInstances,
+  currentNamespace,
+  expandedGroups,
+  onToggleGroup,
+  onSelectResource
 }: {
-  onRowClick: (name: string, namespace: string) => void;
-  table: LoadState<CustomResourceTable>;
+  crds: LoadState<CrdGroup[]>;
+  crdInstances: Map<string, LoadState<CustomResourceTable>>;
+  currentNamespace: string;
+  expandedGroups: Set<string>;
+  onToggleGroup: (group: string) => void;
+  onSelectResource: (crd: CrdResource, name: string, namespace: string) => void;
 }) {
-  if (table.status === "loading" && table.data.rows.length === 0) {
+  if (crds.status === "loading") {
+    return (
+      <div className="table-placeholder">
+        <Loader2 className="spin" size={24} />
+        <span>Loading custom resource definitions...</span>
+      </div>
+    );
+  }
+
+  if (crds.status === "error") {
+    return (
+      <EmptyState
+        icon={<CircleAlert size={28} />}
+        title="CRDs unavailable"
+        detail={crds.message}
+      />
+    );
+  }
+
+  if (crds.data.length === 0) {
+    return (
+      <EmptyState
+        icon={<Database size={28} />}
+        title="No custom resources"
+        detail="No custom resource definitions found in this cluster."
+      />
+    );
+  }
+
+  const allInstancesLoaded = crds.data.every((group) =>
+    group.resources.every((r) => {
+      if (currentNamespace && r.scope !== "Namespaced") return true;
+      const s = crdInstances.get(`${r.group}/${r.kind}`);
+      return s?.status === "idle" || s?.status === "error";
+    })
+  );
+
+  if (!allInstancesLoaded) {
     return (
       <div className="table-placeholder">
         <Loader2 className="spin" size={24} />
@@ -1948,61 +1939,90 @@ function CustomResourceTableView({
     );
   }
 
-  if (table.status === "error") {
-    return (
-      <EmptyState
-        icon={<CircleAlert size={28} />}
-        title="Custom resources unavailable"
-        detail={table.message}
-      />
-    );
-  }
-
-  if (table.data.rows.length === 0) {
-    return (
-      <EmptyState
-        icon={<Layers3 size={28} />}
-        title="No custom resources found"
-        detail="This CRD has no visible resources, or RBAC rules hide them."
-      />
-    );
-  }
-
-  const isNamespaced = table.data.columns[0] === "Namespace";
-
   return (
-    <div className="resource-table-wrap custom-resource-table">
-      <table className="resource-table">
-        <thead>
-          <tr>
-            {table.data.columns.map((column, index) => (
-              <th key={`${column}-${index}`}>{column}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {table.data.rows.map((row, rowIndex) => {
-            const namespace = isNamespaced ? row[0] : "";
-            const name = isNamespaced ? row[1] : row[0];
-            return (
-              <tr
-                className="clickable-row"
-                key={`${row.join("-")}-${rowIndex}`}
-                onClick={() => onRowClick(name, namespace)}
-              >
-                {row.map((cell, cellIndex) => (
-                  <td
-                    className={cellIndex === (isNamespaced ? 1 : 0) ? "custom-resource-name" : ""}
-                    key={`${cell}-${cellIndex}`}
-                  >
-                    {cell}
-                  </td>
-                ))}
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+    <div className="crd-browser">
+      {crds.data.map((group) => {
+        const allEmpty = group.resources.every((r) => {
+          if (currentNamespace && r.scope !== "Namespaced") return true;
+          const s = crdInstances.get(`${r.group}/${r.kind}`);
+          return s?.status === "idle" && s.data.count === 0;
+        });
+        if (allEmpty) return null;
+        return (
+        <div className="crd-browser-group" key={group.group}>
+          <button
+            className="crd-browser-group-title"
+            onClick={() => onToggleGroup(group.group)}
+            type="button"
+          >
+            <img
+              alt=""
+              className="crd-favicon"
+              src={faviconUrlForCrdGroup(group.group)}
+            />
+            <span>{group.group}</span>
+            {expandedGroups.has(group.group) ? (
+              <ChevronDown size={15} />
+            ) : (
+              <ChevronRight size={15} />
+            )}
+          </button>
+          {expandedGroups.has(group.group)
+            ? group.resources.map((resource) => {
+                if (currentNamespace && resource.scope !== "Namespaced") return null;
+                const key = `${resource.group}/${resource.kind}`;
+                const state = crdInstances.get(key);
+                if (state?.status === "idle" && state.data.count === 0) return null;
+                const hasNamespaceCol = state?.status === "idle" && state.data.columns[0] === "Namespace";
+                return (
+                  <div className="crd-browser-kind-section" key={key}>
+                    <div className="crd-browser-kind-header">
+                      <span>{resource.kind}</span>
+                      {state?.status === "loading" ? (
+                        <Loader2 className="spin" size={12} />
+                      ) : state?.status === "idle" ? (
+                        <span className="crd-browser-count">{state.data.count}</span>
+                      ) : null}
+                    </div>
+                    {state?.status === "idle" && state.data.count > 0 ? (
+                      <div className="resource-table-wrap">
+                        <table className="resource-table">
+                          <thead>
+                            <tr>
+                              {state.data.columns.map((col, i) => (
+                                <th key={`${col}-${i}`}>{col}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {state.data.rows.map((row, i) => {
+                              const namespace = hasNamespaceCol ? row[0] : currentNamespace;
+                              const name = hasNamespaceCol ? row[1] : row[0];
+                              return (
+                                <tr
+                                  className="clickable-row"
+                                  key={`${name}-${namespace}-${i}`}
+                                  onClick={() => onSelectResource(resource, name, namespace)}
+                                >
+                                  {row.map((cell, ci) => (
+                                    <td key={`${cell}-${ci}`}>{cell}</td>
+                                  ))}
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : state?.status === "error" ? (
+                      <p className="crd-browser-empty crd-browser-error">{state.message}</p>
+                    ) : null}
+                  </div>
+                );
+              })
+            : null}
+        </div>
+        );
+      })}
     </div>
   );
 }
