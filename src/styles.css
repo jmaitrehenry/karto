@@ -444,6 +444,125 @@ select {
   color: var(--text);
 }
 
+.crd-browser {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  padding: 4px 0;
+  overflow: auto;
+  height: 100%;
+}
+
+.crd-browser-group {
+  display: grid;
+  gap: 3px;
+}
+
+.crd-browser-group-title {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  border-radius: 7px;
+  padding: 6px 8px;
+  color: var(--overlay-1);
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+  text-align: left;
+}
+
+.crd-browser-group-title:hover {
+  background: rgb(var(--text-rgb) / 0.07);
+  color: var(--text);
+}
+
+.crd-browser-group-title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crd-browser-group-title svg {
+  color: var(--overlay-2);
+}
+
+.crd-browser-kind-section {
+  display: grid;
+  gap: 2px;
+  margin-left: 30px;
+}
+
+.crd-browser-kind-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--subtext-0);
+}
+
+.crd-browser-count {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--overlay-1);
+  background: rgb(var(--text-rgb) / 0.07);
+  border-radius: 10px;
+  padding: 1px 7px;
+}
+
+.crd-browser-rows {
+  display: grid;
+  gap: 1px;
+}
+
+.crd-browser-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  border-radius: 5px;
+  padding: 4px 8px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.crd-browser-row:hover {
+  background: rgb(var(--text-rgb) / 0.07);
+}
+
+.crd-browser-row-ns {
+  font-size: 11px;
+  color: var(--overlay-1);
+  white-space: nowrap;
+}
+
+.crd-browser-row-name {
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crd-browser-empty {
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--overlay-1);
+  margin: 0;
+}
+
+.crd-browser-error {
+  color: var(--red);
+}
+
 .content {
   display: flex;
   flex-direction: column;
