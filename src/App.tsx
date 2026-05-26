@@ -2305,12 +2305,33 @@ function LogsView({
   status: LoadState<null>;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLPreElement>(null);
+  const shouldFollow = useRef(true);
+  const isProgrammaticScroll = useRef(false);
   const [fontSize, setFontSize] = useState(11);
   const decreaseFontSize = () => setFontSize((s) => Math.max(8, s - 1));
   const increaseFontSize = () => setFontSize((s) => Math.min(20, s + 1));
 
+  // Met à jour shouldFollow uniquement sur les scrolls manuels de l'utilisateur
   useEffect(() => {
-    endRef.current?.scrollIntoView({ block: "end" });
+    const container = containerRef.current;
+    if (!container) return;
+    const handleScroll = () => {
+      if (isProgrammaticScroll.current) return;
+      const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50;
+      shouldFollow.current = isAtBottom;
+    };
+    container.addEventListener("scroll", handleScroll);
+    return () => container.removeEventListener("scroll", handleScroll);
+  }, []);
+
+  // Scroll en bas si on suit, à chaque nouvelle ligne
+  useEffect(() => {
+    if (shouldFollow.current) {
+      isProgrammaticScroll.current = true;
+      endRef.current?.scrollIntoView({ block: "end" });
+      requestAnimationFrame(() => { isProgrammaticScroll.current = false; });
+    }
   }, [lines]);
 
   return (
@@ -2337,7 +2358,7 @@ function LogsView({
         <div className="logs-error">{status.message}</div>
       ) : null}
 
-      <pre className="logs-panel" style={{ fontSize }}>
+      <pre className="logs-panel" style={{ fontSize }} ref={containerRef}>
         {lines.length === 0 && status.status !== "error" ? (
           <span className="logs-empty">Waiting for logs...</span>
         ) : (
