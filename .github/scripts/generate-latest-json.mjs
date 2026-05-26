@@ -18,9 +18,17 @@ function readSig(filePath) {
 
 function findFile(dir, ext) {
   try {
-    const files = readdirSync(dir);
-    const match = files.find((f) => f.endsWith(ext));
-    return match ? join(dir, match) : null;
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        const found = findFile(fullPath, ext);
+        if (found) return found;
+      } else if (entry.name.endsWith(ext)) {
+        return fullPath;
+      }
+    }
+    return null;
   } catch {
     return null;
   }
