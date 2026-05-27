@@ -1351,6 +1351,39 @@ select {
   margin-bottom: 6px;
 }
 
+.logs-prev-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid rgb(var(--text-rgb) / 0.15);
+  border-radius: 5px;
+  background: rgb(var(--surface-rgb) / 0.5);
+  color: var(--subtext-1);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+
+.logs-prev-btn:hover {
+  background: rgb(var(--text-rgb) / 0.1);
+  color: var(--text);
+}
+
+.logs-prev-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.logs-prev-btn.active {
+  background: color-mix(in srgb, var(--mauve) 15%, transparent);
+  border-color: color-mix(in srgb, var(--mauve) 40%, transparent);
+  color: var(--mauve);
+}
+
 .yaml-font-btn {
   display: flex;
   align-items: center;

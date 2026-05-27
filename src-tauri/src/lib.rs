@@ -72,6 +72,7 @@ struct WorkloadDetails {
     ip_families: Vec<String>,
     service_selector: Vec<KeyValue>,
     service_ports: Vec<ServicePortDetail>,
+    has_previous_logs: bool,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -101,6 +102,7 @@ struct PodDetails {
     containers: String,
     restarts: i32,
     status: String,
+    has_previous_logs: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -721,6 +723,7 @@ async fn get_custom_resource_details(
         ip_families: Vec::new(),
         service_selector: Vec::new(),
         service_ports: Vec::new(),
+        has_previous_logs: false,
     })
 }
 
@@ -848,6 +851,7 @@ async fn start_workload_log_stream(
     kind: String,
     name: String,
     stream_id: String,
+    previous: bool,
 ) -> Result<(), String> {
     abort_log_stream(&streams, &stream_id);
 
@@ -886,9 +890,10 @@ async fn start_workload_log_stream(
             let handle = tauri::async_runtime::spawn(async move {
                 let params = LogParams {
                     container: Some(container_name.clone()),
-                    follow: true,
-                    tail_lines: Some(200),
+                    follow: !previous,
+                    tail_lines: if previous { None } else { Some(200) },
                     timestamps: true,
+                    previous,
                     ..LogParams::default()
                 };
 
@@ -925,13 +930,19 @@ async fn start_workload_log_stream(
                         }
                     }
                     Err(error) => {
+                        let error_str = error.to_string();
+                        let line = if previous && error_str.contains("previous terminated container") {
+                            format!("No previous container logs available for \"{}\"", container_name)
+                        } else {
+                            format!("unable to open log stream: {}", error)
+                        };
                         let _ = app_handle.emit(
                             "workload-log",
                             LogLine {
                                 stream_id,
                                 pod: pod_name,
                                 container: container_name,
-                                line: format!("unable to open log stream: {}", error),
+                                line,
                             },
                         );
                     }
@@ -1219,6 +1230,8 @@ async fn workload_details_from_deployment(
         "Progressing"
     };
 
+    let pods = pods_for(client.clone(), &namespace, &selector).await?;
+    let has_previous_logs = pods.iter().any(|p| p.has_previous_logs);
     Ok(WorkloadDetails {
         name: deployment.name_any(),
         kind: "Deployment".to_string(),
@@ -1230,7 +1243,7 @@ async fn workload_details_from_deployment(
         resource_totals,
         labels: key_values(labels),
         annotations: key_values(annotations),
-        pods: pods_for(client.clone(), &namespace, &selector).await?,
+        pods,
         services: services_for(client, &namespace, &template_labels).await?,
         config_warnings,
         service_type: None,
@@ -1240,6 +1253,7 @@ async fn workload_details_from_deployment(
         ip_families: Vec::new(),
         service_selector: Vec::new(),
         service_ports: Vec::new(),
+        has_previous_logs,
     })
 }
 
@@ -1295,6 +1309,8 @@ async fn workload_details_from_stateful_set(
         "Progressing"
     };
 
+    let pods = pods_for(client.clone(), &namespace, &selector).await?;
+    let has_previous_logs = pods.iter().any(|p| p.has_previous_logs);
     Ok(WorkloadDetails {
         name: stateful_set.name_any(),
         kind: "StatefulSet".to_string(),
@@ -1306,7 +1322,7 @@ async fn workload_details_from_stateful_set(
         resource_totals,
         labels: key_values(labels),
         annotations: key_values(annotations),
-        pods: pods_for(client.clone(), &namespace, &selector).await?,
+        pods,
         services: services_for(client, &namespace, &template_labels).await?,
         config_warnings,
         service_type: None,
@@ -1316,6 +1332,7 @@ async fn workload_details_from_stateful_set(
         ip_families: Vec::new(),
         service_selector: Vec::new(),
         service_ports: Vec::new(),
+        has_previous_logs,
     })
 }
 
@@ -1371,6 +1388,8 @@ async fn workload_details_from_daemon_set(
         "Progressing"
     };
 
+    let pods = pods_for(client.clone(), &namespace, &selector).await?;
+    let has_previous_logs = pods.iter().any(|p| p.has_previous_logs);
     Ok(WorkloadDetails {
         name: daemon_set.name_any(),
         kind: "DaemonSet".to_string(),
@@ -1382,7 +1401,7 @@ async fn workload_details_from_daemon_set(
         resource_totals,
         labels: key_values(labels),
         annotations: key_values(annotations),
-        pods: pods_for(client.clone(), &namespace, &selector).await?,
+        pods,
         services: services_for(client, &namespace, &template_labels).await?,
         config_warnings,
         service_type: None,
@@ -1392,6 +1411,7 @@ async fn workload_details_from_daemon_set(
         ip_families: Vec::new(),
         service_selector: Vec::new(),
         service_ports: Vec::new(),
+        has_previous_logs,
     })
 }
 
@@ -1413,11 +1433,17 @@ fn pod_details(pod: Pod, namespace: String, status: &str) -> WorkloadDetails {
         .cloned()
         .unwrap_or_default();
 
-    let all_statuses = init_container_statuses
+    let all_statuses: Vec<_> = init_container_statuses
         .iter()
-        .chain(container_statuses.iter());
+        .chain(container_statuses.iter())
+        .collect();
+
+    let has_previous_logs = all_statuses
+        .iter()
+        .any(|cs| cs.last_state.as_ref().map(|s| s.terminated.is_some()).unwrap_or(false));
 
     let containers = all_statuses
+        .iter()
         .map(|cs| {
             let ready = if cs.ready { "1/1" } else { "0/1" }.to_string();
             let container_status = if let Some(state) = &cs.state {
@@ -1445,6 +1471,7 @@ fn pod_details(pod: Pod, namespace: String, status: &str) -> WorkloadDetails {
                 containers: ready,
                 restarts: cs.restart_count,
                 status: container_status,
+                has_previous_logs: cs.last_state.as_ref().map(|s| s.terminated.is_some()).unwrap_or(false),
             }
         })
         .collect();
@@ -1476,6 +1503,7 @@ fn pod_details(pod: Pod, namespace: String, status: &str) -> WorkloadDetails {
         ip_families: Vec::new(),
         service_selector: Vec::new(),
         service_ports: Vec::new(),
+        has_previous_logs,
     }
 }
 
@@ -1561,6 +1589,7 @@ fn service_details(service: Service, namespace: String) -> WorkloadDetails {
         ip_families,
         service_selector,
         service_ports,
+        has_previous_logs: false,
     }
 }
 
@@ -1594,6 +1623,7 @@ where
         service_type: None,
         cluster_ip: None,
         external_ips: Vec::new(),
+        has_previous_logs: false,
         internal_traffic_policy: None,
         ip_families: Vec::new(),
         service_selector: Vec::new(),
@@ -1636,6 +1666,16 @@ async fn pods_for(
                 .as_ref()
                 .and_then(|status| status.phase.clone())
                 .unwrap_or_else(|| "Unknown".to_string());
+            let has_previous_logs = pod
+                .status
+                .as_ref()
+                .and_then(|s| s.container_statuses.as_ref())
+                .map(|statuses| {
+                    statuses.iter().any(|cs| {
+                        cs.last_state.as_ref().map(|s| s.terminated.is_some()).unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false);
 
             PodDetails {
                 name: pod.name_any(),
@@ -1643,6 +1683,7 @@ async fn pods_for(
                 containers: format!("{}/{}", ready, total),
                 restarts,
                 status,
+                has_previous_logs,
             }
         })
         .collect::<Vec<_>>();

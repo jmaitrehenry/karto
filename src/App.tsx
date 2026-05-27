@@ -16,6 +16,7 @@ import {
   Cloud,
   Database,
   Folder,
+  History,
   List,
   Layers3,
   Loader2,
@@ -128,6 +129,7 @@ type WorkloadDetails = {
   pods: PodDetails[];
   services: ServiceDetails[];
   config_warnings: ConfigWarning[];
+  has_previous_logs: boolean;
 };
 
 type LogLine = {
@@ -262,6 +264,7 @@ export function App() {
   });
   const [activeDetailTab, setActiveDetailTab] = useState<DetailTab>("overview");
   const [logLines, setLogLines] = useState<LogLine[]>([]);
+  const [logPrevious, setLogPrevious] = useState(false);
   const [logStatus, setLogStatus] = useState<LoadState<null>>({
     status: "idle",
     data: null
@@ -501,7 +504,8 @@ export function App() {
       namespace: selectedResourceNamespace,
       kind: selectedResource.kind,
       name: selectedResource.name,
-      streamId
+      streamId,
+      previous: logPrevious
     }).catch((error) => {
       if (!mounted) return;
       setLogStatus({
@@ -516,7 +520,7 @@ export function App() {
       void invoke("stop_log_stream", { streamId });
       void unlistenPromise.then((unlisten) => unlisten());
     };
-  }, [activeDetailTab, selectedContext, selectedResourceNamespace, selectedResource]);
+  }, [activeDetailTab, selectedContext, selectedResourceNamespace, selectedResource, logPrevious]);
 
   useEffect(() => {
     if (!clusterMenuOpen) return;
@@ -1528,9 +1532,11 @@ export function App() {
             events={events}
             fallback={selectedResource}
             logLines={logLines}
+            logPrevious={logPrevious}
             logStatus={logStatus}
             onForwardsChanged={setActivePortForwards}
             onOpenResource={(resource) => openResource(resource, true)}
+            onToggleLogPrevious={() => setLogPrevious((p) => !p)}
             targetContainerRef={pendingContainerRef}
             yaml={yaml}
           />
@@ -2035,9 +2041,11 @@ function WorkloadDetailsView({
   events,
   fallback,
   logLines,
+  logPrevious,
   logStatus,
   onForwardsChanged,
   onOpenResource,
+  onToggleLogPrevious,
   targetContainerRef,
   yaml
 }: {
@@ -2048,9 +2056,11 @@ function WorkloadDetailsView({
   events: LoadState<EventSummary[]>;
   fallback: ResourceSummary;
   logLines: LogLine[];
+  logPrevious?: boolean;
   logStatus: LoadState<null>;
   onForwardsChanged: (fwds: PortForwardInfo[]) => void;
   onOpenResource: (resource: ResourceSummary) => void;
+  onToggleLogPrevious?: () => void;
   targetContainerRef: React.RefObject<string | null>;
   yaml: LoadState<string>;
 }) {
@@ -2078,7 +2088,7 @@ function WorkloadDetailsView({
   if (!workload) return null;
 
   if (activeTab === "logs" && supportsLogs(fallback)) {
-    return <LogsView lines={logLines} status={logStatus} />;
+    return <LogsView hasPreviousLogs={workload.has_previous_logs} lines={logLines} previous={logPrevious ?? false} status={logStatus} onTogglePrevious={onToggleLogPrevious} />;
   }
 
   if (activeTab === "events") {
@@ -2318,10 +2328,16 @@ function WorkloadDetailsView({
 }
 
 function LogsView({
+  hasPreviousLogs,
   lines,
+  onTogglePrevious,
+  previous,
   status
 }: {
+  hasPreviousLogs: boolean;
   lines: LogLine[];
+  onTogglePrevious?: () => void;
+  previous: boolean;
   status: LoadState<null>;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
@@ -2360,14 +2376,27 @@ function LogsView({
         <span className="logs-toolbar-status">
           <span>
             {status.status === "loading"
-              ? "Connecting to log stream..."
+              ? previous ? "Loading previous container logs..." : "Connecting to log stream..."
               : status.status === "error"
-              ? "Log stream failed"
-              : "Streaming live logs"}
+              ? previous ? "Previous logs unavailable" : "Log stream failed"
+              : previous ? "Previous container logs" : "Streaming live logs"}
           </span>
           {status.status === "loading" ? <Loader2 className="spin" size={14} /> : null}
         </span>
         <span className="logs-toolbar-controls">
+          {onTogglePrevious ? (
+            <button
+              className={`logs-prev-btn${previous ? " active" : ""}`}
+              onClick={onTogglePrevious}
+              aria-label="Toggle previous container logs"
+              aria-pressed={previous}
+              disabled={!hasPreviousLogs}
+              title={hasPreviousLogs ? "Show logs from previous container instance" : "No previous container instance available"}
+            >
+              <History size={12} />
+              Previous
+            </button>
+          ) : null}
           <button className="yaml-font-btn" onClick={decreaseFontSize} aria-label="Decrease font size" disabled={fontSize <= 8}>−</button>
           <span className="yaml-font-size">{fontSize}px</span>
           <button className="yaml-font-btn" onClick={increaseFontSize} aria-label="Increase font size" disabled={fontSize >= 20}>+</button>
