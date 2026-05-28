@@ -64,6 +64,7 @@ struct WorkloadDetails {
     annotations: Vec<KeyValue>,
     pods: Vec<PodDetails>,
     services: Vec<ServiceDetails>,
+    pvcs: Vec<PvcInfo>,
     config_warnings: Vec<ConfigWarning>,
     service_type: Option<String>,
     cluster_ip: Option<String>,
@@ -72,6 +73,10 @@ struct WorkloadDetails {
     ip_families: Vec<String>,
     service_selector: Vec<KeyValue>,
     service_ports: Vec<ServicePortDetail>,
+    pvc_capacity: Option<String>,
+    pvc_storage_class: Option<String>,
+    pvc_access_modes: Vec<String>,
+    pvc_volume_name: Option<String>,
     has_previous_logs: bool,
 }
 
@@ -110,6 +115,16 @@ struct ServiceDetails {
     name: String,
     service_type: String,
     ports: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PvcInfo {
+    name: String,
+    status: String,
+    capacity: String,
+    storage_class: String,
+    access_modes: Vec<String>,
+    mount_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -715,6 +730,7 @@ async fn get_custom_resource_details(
         annotations: key_values(annotations),
         pods: Vec::new(),
         services: Vec::new(),
+        pvcs: Vec::new(),
         config_warnings: Vec::new(),
         service_type: None,
         cluster_ip: None,
@@ -723,6 +739,10 @@ async fn get_custom_resource_details(
         ip_families: Vec::new(),
         service_selector: Vec::new(),
         service_ports: Vec::new(),
+        pvc_capacity: None,
+        pvc_storage_class: None,
+        pvc_access_modes: Vec::new(),
+        pvc_volume_name: None,
         has_previous_logs: false,
     })
 }
@@ -790,10 +810,14 @@ async fn get_workload_details(
             ))
         }
         "Pod" => {
-            let api: Api<Pod> = Api::namespaced(client, &namespace);
+            let api: Api<Pod> = Api::namespaced(client.clone(), &namespace);
             let pod = api.get(&name).await.map_err(kube_error)?;
             let status = pod_summary(pod.clone(), "Pod").status;
-            Ok(pod_details(pod, namespace, &status))
+            let pod_spec = pod.spec.as_ref();
+            let pvcs = pvcs_for(client, &namespace, pod_spec).await?;
+            let mut details = pod_details(pod, namespace, &status);
+            details.pvcs = pvcs;
+            Ok(details)
         }
         "Service" => {
             let api: Api<Service> = Api::namespaced(client, &namespace);
@@ -826,14 +850,7 @@ async fn get_workload_details(
         "PersistentVolumeClaim" => {
             let api: Api<PersistentVolumeClaim> = Api::namespaced(client, &namespace);
             let pvc = api.get(&name).await.map_err(kube_error)?;
-            let status = pvc_summary(pvc.clone(), "PersistentVolumeClaim").status;
-            Ok(generic_details(
-                pvc,
-                "PersistentVolumeClaim",
-                namespace,
-                &status,
-                None,
-            ))
+            Ok(pvc_details(pvc, namespace))
         }
         _ => Err(format!(
             "Details are not available for kind `{}` yet.",
@@ -1230,6 +1247,10 @@ async fn workload_details_from_deployment(
         "Progressing"
     };
 
+    let pod_spec = deployment
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.template.spec.as_ref());
     let pods = pods_for(client.clone(), &namespace, &selector).await?;
     let has_previous_logs = pods.iter().any(|p| p.has_previous_logs);
     Ok(WorkloadDetails {
@@ -1244,7 +1265,8 @@ async fn workload_details_from_deployment(
         labels: key_values(labels),
         annotations: key_values(annotations),
         pods,
-        services: services_for(client, &namespace, &template_labels).await?,
+        services: services_for(client.clone(), &namespace, &template_labels).await?,
+        pvcs: pvcs_for(client, &namespace, pod_spec).await?,
         config_warnings,
         service_type: None,
         cluster_ip: None,
@@ -1253,6 +1275,10 @@ async fn workload_details_from_deployment(
         ip_families: Vec::new(),
         service_selector: Vec::new(),
         service_ports: Vec::new(),
+        pvc_capacity: None,
+        pvc_storage_class: None,
+        pvc_access_modes: Vec::new(),
+        pvc_volume_name: None,
         has_previous_logs,
     })
 }
@@ -1309,10 +1335,21 @@ async fn workload_details_from_stateful_set(
         "Progressing"
     };
 
+    let pod_spec = stateful_set
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.template.spec.as_ref());
+    let claim_templates: Vec<PersistentVolumeClaim> = stateful_set
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.volume_claim_templates.clone())
+        .unwrap_or_default();
+    let ss_name = stateful_set.name_any();
     let pods = pods_for(client.clone(), &namespace, &selector).await?;
+    let pod_names: Vec<String> = pods.iter().map(|p| p.name.clone()).collect();
     let has_previous_logs = pods.iter().any(|p| p.has_previous_logs);
     Ok(WorkloadDetails {
-        name: stateful_set.name_any(),
+        name: ss_name.clone(),
         kind: "StatefulSet".to_string(),
         namespace: namespace.clone(),
         age: age_for(&stateful_set),
@@ -1323,7 +1360,8 @@ async fn workload_details_from_stateful_set(
         labels: key_values(labels),
         annotations: key_values(annotations),
         pods,
-        services: services_for(client, &namespace, &template_labels).await?,
+        services: services_for(client.clone(), &namespace, &template_labels).await?,
+        pvcs: pvcs_for_stateful_set(client, &namespace, pod_spec, &claim_templates, &pod_names).await?,
         config_warnings,
         service_type: None,
         cluster_ip: None,
@@ -1332,6 +1370,10 @@ async fn workload_details_from_stateful_set(
         ip_families: Vec::new(),
         service_selector: Vec::new(),
         service_ports: Vec::new(),
+        pvc_capacity: None,
+        pvc_storage_class: None,
+        pvc_access_modes: Vec::new(),
+        pvc_volume_name: None,
         has_previous_logs,
     })
 }
@@ -1388,6 +1430,10 @@ async fn workload_details_from_daemon_set(
         "Progressing"
     };
 
+    let pod_spec = daemon_set
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.template.spec.as_ref());
     let pods = pods_for(client.clone(), &namespace, &selector).await?;
     let has_previous_logs = pods.iter().any(|p| p.has_previous_logs);
     Ok(WorkloadDetails {
@@ -1402,7 +1448,8 @@ async fn workload_details_from_daemon_set(
         labels: key_values(labels),
         annotations: key_values(annotations),
         pods,
-        services: services_for(client, &namespace, &template_labels).await?,
+        services: services_for(client.clone(), &namespace, &template_labels).await?,
+        pvcs: pvcs_for(client, &namespace, pod_spec).await?,
         config_warnings,
         service_type: None,
         cluster_ip: None,
@@ -1411,6 +1458,10 @@ async fn workload_details_from_daemon_set(
         ip_families: Vec::new(),
         service_selector: Vec::new(),
         service_ports: Vec::new(),
+        pvc_capacity: None,
+        pvc_storage_class: None,
+        pvc_access_modes: Vec::new(),
+        pvc_volume_name: None,
         has_previous_logs,
     })
 }
@@ -1495,6 +1546,7 @@ fn pod_details(pod: Pod, namespace: String, status: &str) -> WorkloadDetails {
         annotations: key_values(annotations),
         pods: containers,
         services: Vec::new(),
+        pvcs: Vec::new(),
         config_warnings,
         service_type: None,
         cluster_ip: None,
@@ -1503,6 +1555,10 @@ fn pod_details(pod: Pod, namespace: String, status: &str) -> WorkloadDetails {
         ip_families: Vec::new(),
         service_selector: Vec::new(),
         service_ports: Vec::new(),
+        pvc_capacity: None,
+        pvc_storage_class: None,
+        pvc_access_modes: Vec::new(),
+        pvc_volume_name: None,
         has_previous_logs,
     }
 }
@@ -1581,6 +1637,7 @@ fn service_details(service: Service, namespace: String) -> WorkloadDetails {
         annotations: key_values(annotations),
         pods: Vec::new(),
         services: Vec::new(),
+        pvcs: Vec::new(),
         config_warnings: Vec::new(),
         service_type: Some(service_type),
         cluster_ip,
@@ -1589,6 +1646,69 @@ fn service_details(service: Service, namespace: String) -> WorkloadDetails {
         ip_families,
         service_selector,
         service_ports,
+        pvc_capacity: None,
+        pvc_storage_class: None,
+        pvc_access_modes: Vec::new(),
+        pvc_volume_name: None,
+        has_previous_logs: false,
+    }
+}
+
+fn pvc_details(pvc: PersistentVolumeClaim, namespace: String) -> WorkloadDetails {
+    let labels = pvc.meta().labels.clone().unwrap_or_default();
+    let annotations = pvc.meta().annotations.clone().unwrap_or_default();
+    let status = pvc
+        .status
+        .as_ref()
+        .and_then(|s| s.phase.clone())
+        .unwrap_or_else(|| "Unknown".to_string());
+    let capacity = pvc
+        .status
+        .as_ref()
+        .and_then(|s| s.capacity.as_ref())
+        .and_then(|c| c.get("storage"))
+        .map(|q| q.0.clone());
+    let storage_class = pvc
+        .spec
+        .as_ref()
+        .and_then(|s| s.storage_class_name.clone());
+    let access_modes = pvc
+        .spec
+        .as_ref()
+        .and_then(|s| s.access_modes.clone())
+        .unwrap_or_default();
+    let volume_name = pvc
+        .spec
+        .as_ref()
+        .and_then(|s| s.volume_name.clone())
+        .filter(|v| !v.is_empty());
+
+    WorkloadDetails {
+        name: pvc.name_any(),
+        kind: "PersistentVolumeClaim".to_string(),
+        namespace,
+        age: age_for(&pvc),
+        ready: None,
+        status,
+        images: Vec::new(),
+        resource_totals: ResourceTotals::default(),
+        labels: key_values(labels),
+        annotations: key_values(annotations),
+        pods: Vec::new(),
+        services: Vec::new(),
+        pvcs: Vec::new(),
+        config_warnings: Vec::new(),
+        service_type: None,
+        cluster_ip: None,
+        external_ips: Vec::new(),
+        internal_traffic_policy: None,
+        ip_families: Vec::new(),
+        service_selector: Vec::new(),
+        service_ports: Vec::new(),
+        pvc_capacity: capacity,
+        pvc_storage_class: storage_class,
+        pvc_access_modes: access_modes,
+        pvc_volume_name: volume_name,
         has_previous_logs: false,
     }
 }
@@ -1619,6 +1739,7 @@ where
         annotations: key_values(annotations),
         pods: Vec::new(),
         services: Vec::new(),
+        pvcs: Vec::new(),
         config_warnings: Vec::new(),
         service_type: None,
         cluster_ip: None,
@@ -1628,6 +1749,10 @@ where
         ip_families: Vec::new(),
         service_selector: Vec::new(),
         service_ports: Vec::new(),
+        pvc_capacity: None,
+        pvc_storage_class: None,
+        pvc_access_modes: Vec::new(),
+        pvc_volume_name: None,
     }
 }
 
@@ -1744,6 +1869,172 @@ async fn services_for(
 
     services.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(services)
+}
+
+async fn pvcs_for(
+    client: Client,
+    namespace: &str,
+    pod_spec: Option<&k8s_openapi::api::core::v1::PodSpec>,
+) -> Result<Vec<PvcInfo>, String> {
+    let Some(pod_spec) = pod_spec else {
+        return Ok(Vec::new());
+    };
+
+    let pvc_volumes: HashMap<String, String> = pod_spec
+        .volumes
+        .iter()
+        .flatten()
+        .filter_map(|v| {
+            v.persistent_volume_claim
+                .as_ref()
+                .map(|pvc| (v.name.clone(), pvc.claim_name.clone()))
+        })
+        .collect();
+
+    if pvc_volumes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut mount_map: HashMap<String, Vec<String>> = HashMap::new();
+    for container in pod_spec
+        .containers
+        .iter()
+        .chain(pod_spec.init_containers.iter().flatten())
+    {
+        for mount in container.volume_mounts.iter().flatten() {
+            if pvc_volumes.contains_key(&mount.name) {
+                mount_map
+                    .entry(mount.name.clone())
+                    .or_default()
+                    .push(mount.mount_path.clone());
+            }
+        }
+    }
+
+    let api: Api<PersistentVolumeClaim> = Api::namespaced(client, namespace);
+    let mut result = Vec::new();
+
+    for (volume_name, claim_name) in &pvc_volumes {
+        let Ok(pvc) = api.get(claim_name).await else {
+            continue;
+        };
+        result.push(PvcInfo {
+            name: claim_name.clone(),
+            status: pvc
+                .status
+                .as_ref()
+                .and_then(|s| s.phase.clone())
+                .unwrap_or_else(|| "Unknown".to_string()),
+            capacity: pvc
+                .status
+                .as_ref()
+                .and_then(|s| s.capacity.as_ref())
+                .and_then(|c| c.get("storage"))
+                .map(|q| q.0.clone())
+                .unwrap_or_else(|| "-".to_string()),
+            storage_class: pvc
+                .spec
+                .as_ref()
+                .and_then(|s| s.storage_class_name.clone())
+                .unwrap_or_else(|| "-".to_string()),
+            access_modes: pvc
+                .spec
+                .as_ref()
+                .and_then(|s| s.access_modes.clone())
+                .unwrap_or_default(),
+            mount_paths: mount_map.get(volume_name).cloned().unwrap_or_default(),
+        });
+    }
+
+    result.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(result)
+}
+
+async fn pvcs_for_stateful_set(
+    client: Client,
+    namespace: &str,
+    pod_spec: Option<&k8s_openapi::api::core::v1::PodSpec>,
+    claim_templates: &[PersistentVolumeClaim],
+    pod_names: &[String],
+) -> Result<Vec<PvcInfo>, String> {
+    // Build mount map from all container volumeMounts (claim templates are referenced by name)
+    let mut mount_map: HashMap<String, Vec<String>> = HashMap::new();
+    if let Some(spec) = pod_spec {
+        for container in spec
+            .containers
+            .iter()
+            .chain(spec.init_containers.iter().flatten())
+        {
+            for mount in container.volume_mounts.iter().flatten() {
+                mount_map
+                    .entry(mount.name.clone())
+                    .or_default()
+                    .push(mount.mount_path.clone());
+            }
+        }
+    }
+
+    let api: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), namespace);
+    let mut result = Vec::new();
+
+    for template in claim_templates {
+        let template_name = template.name_any();
+        let storage_class = template
+            .spec
+            .as_ref()
+            .and_then(|s| s.storage_class_name.clone())
+            .unwrap_or_else(|| "-".to_string());
+        let access_modes = template
+            .spec
+            .as_ref()
+            .and_then(|s| s.access_modes.clone())
+            .unwrap_or_default();
+        let template_capacity = template
+            .spec
+            .as_ref()
+            .and_then(|s| s.resources.as_ref())
+            .and_then(|r| r.requests.as_ref())
+            .and_then(|r| r.get("storage"))
+            .map(|q| q.0.clone())
+            .unwrap_or_else(|| "-".to_string());
+        let mount_paths = mount_map.get(&template_name).cloned().unwrap_or_default();
+
+        // One PVC per pod: {templateName}-{podName}
+        for pod_name in pod_names {
+            let pvc_name = format!("{}-{}", template_name, pod_name);
+            let (status, capacity) = if let Ok(pvc) = api.get(&pvc_name).await {
+                let s = pvc
+                    .status
+                    .as_ref()
+                    .and_then(|s| s.phase.clone())
+                    .unwrap_or_else(|| "Unknown".to_string());
+                let c = pvc
+                    .status
+                    .as_ref()
+                    .and_then(|s| s.capacity.as_ref())
+                    .and_then(|c| c.get("storage"))
+                    .map(|q| q.0.clone())
+                    .unwrap_or_else(|| template_capacity.clone());
+                (s, c)
+            } else {
+                ("Pending".to_string(), template_capacity.clone())
+            };
+            result.push(PvcInfo {
+                name: pvc_name,
+                status,
+                capacity,
+                storage_class: storage_class.clone(),
+                access_modes: access_modes.clone(),
+                mount_paths: mount_paths.clone(),
+            });
+        }
+    }
+
+    // Also handle any explicit PVC volumes in the pod spec
+    let mut extra = pvcs_for(client, namespace, pod_spec).await?;
+    result.append(&mut extra);
+    result.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(result)
 }
 
 async fn workload_selector(

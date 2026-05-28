@@ -103,6 +103,15 @@ type ServiceDetails = {
   ports: string[];
 };
 
+type PvcInfo = {
+  name: string;
+  status: string;
+  capacity: string;
+  storage_class: string;
+  access_modes: string[];
+  mount_paths: string[];
+};
+
 type WorkloadDetails = {
   name: string;
   kind: string;
@@ -124,10 +133,15 @@ type WorkloadDetails = {
   ip_families: string[];
   service_selector: KeyValue[];
   service_ports: { port: number; display: string }[];
+  pvc_capacity?: string;
+  pvc_storage_class?: string;
+  pvc_access_modes: string[];
+  pvc_volume_name?: string;
   labels: KeyValue[];
   annotations: KeyValue[];
   pods: PodDetails[];
   services: ServiceDetails[];
+  pvcs: PvcInfo[];
   config_warnings: ConfigWarning[];
   has_previous_logs: boolean;
 };
@@ -2171,7 +2185,7 @@ function WorkloadDetailsView({
 
       <section className="details-section">
         <h2>Overview</h2>
-        <div className={hasResourceTotals || workload.service_ports?.length > 0 ? "overview-grid" : "overview-grid single"}>
+        <div className={hasResourceTotals || workload.service_ports?.length > 0 || workload.kind === "PersistentVolumeClaim" ? "overview-grid" : "overview-grid single"}>
           <div className="info-card">
             <InfoRow label="Kind" value={workload.kind} />
             <InfoRow label="Namespace" value={workload.namespace} />
@@ -2223,6 +2237,23 @@ function WorkloadDetailsView({
               {workload.service_ports.map((p) => (
                 <InfoRow key={p.port} label={String(p.port)} value={p.display.split(" -> ")[1] ?? p.display} />
               ))}
+            </div>
+          ) : null}
+          {workload.kind === "PersistentVolumeClaim" ? (
+            <div className="info-card">
+              <div className="metrics-title">Volume</div>
+              {workload.pvc_capacity ? (
+                <InfoRow label="Capacity" value={workload.pvc_capacity} />
+              ) : null}
+              {workload.pvc_storage_class ? (
+                <InfoRow label="Storage Class" value={workload.pvc_storage_class} />
+              ) : null}
+              {workload.pvc_access_modes?.length > 0 ? (
+                <InfoRow label="Access Modes" value={workload.pvc_access_modes.join(", ")} />
+              ) : null}
+              {workload.pvc_volume_name ? (
+                <InfoRow label="Volume" value={workload.pvc_volume_name} />
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -2318,6 +2349,33 @@ function WorkloadDetailsView({
               service.name,
               service.service_type,
               service.ports.join(", ") || "-"
+            ])}
+          />
+        </section>
+      ) : null}
+
+      {workload.pvcs?.length > 0 ? (
+        <section className="details-section">
+          <h2>Persistent Volume Claims</h2>
+          <DetailsTable
+            empty="No PVCs."
+            headers={["Name", "Status", "Capacity", "Storage Class", "Access Modes", "Mount Paths"]}
+            onRowClick={(index) => {
+              const pvc = workload.pvcs[index];
+              onOpenResource({
+                name: pvc.name,
+                kind: "PersistentVolumeClaim",
+                namespace: workload.namespace,
+                status: pvc.status
+              });
+            }}
+            rows={workload.pvcs.map((pvc) => [
+              pvc.name,
+              pvc.status,
+              pvc.capacity,
+              pvc.storage_class,
+              pvc.access_modes.join(", ") || "-",
+              pvc.mount_paths.join(", ") || "-"
             ])}
           />
         </section>
