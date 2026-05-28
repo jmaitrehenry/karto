@@ -1351,6 +1351,64 @@ select {
   margin-bottom: 6px;
 }
 
+.logs-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.logs-search {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.logs-search-icon {
+  color: var(--overlay-1);
+  flex-shrink: 0;
+}
+
+.logs-search-input {
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid rgb(var(--text-rgb) / 0.15);
+  border-radius: 5px;
+  background: rgb(var(--surface-rgb) / 0.5);
+  color: var(--text);
+  font-size: 11px;
+  font-family: inherit;
+  outline: none;
+  width: 160px;
+  transition: border-color 0.1s;
+}
+
+.logs-search-input:focus {
+  border-color: var(--blue);
+}
+
+.logs-search-input::placeholder {
+  color: var(--overlay-0);
+}
+
+.logs-search-count {
+  color: var(--subtext-0);
+  font-size: 11px;
+  min-width: 46px;
+  text-align: center;
+}
+
+.log-search-mark {
+  background: color-mix(in srgb, var(--yellow) 40%, transparent);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.log-line-current .log-search-mark {
+  background: color-mix(in srgb, var(--yellow) 70%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--yellow) 80%, transparent);
+}
+
 .logs-prev-btn {
   display: flex;
   align-items: center;

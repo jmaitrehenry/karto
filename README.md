@@ -4,9 +4,9 @@
 	<img src="src-tauri/icons/karto.png" alt="Karto logo" width="180" />
 </p>
 
-A small macOS Kubernetes browser for exploring clusters and namespace resources.
+A desktop Kubernetes browser for exploring clusters and namespace resources on macOS, Linux, and Windows.
 
-Karto is a desktop Kubernetes explorer built with Tauri, React, TypeScript, and Rust. It is designed for fast inspection workflows on macOS: choose an existing cluster context, browse namespaces, inspect workloads, follow logs, review events, and open raw YAML without leaving the desktop app.
+Karto is a desktop Kubernetes explorer built with Tauri, React, TypeScript, and Rust. It is designed for fast inspection workflows: choose an existing cluster context, browse namespaces, inspect workloads, follow logs, review events, and open raw YAML without leaving the desktop app.
 
 The app does not create or manage kubeconfig contexts. It uses the contexts already available on your machine and shows only what your Kubernetes RBAC permissions allow it to read.
 
@@ -62,7 +62,7 @@ npm run tauri:build
 
 - Your kubeconfig contexts must already exist and be accessible.
 - Your Kubernetes RBAC permissions determine which namespaces and resources are visible.
-- macOS is the primary target environment for this project.
+- Karto builds for macOS, Linux, and Windows.
 
 ## License
 
