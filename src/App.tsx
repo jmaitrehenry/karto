@@ -8,14 +8,18 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import {
   ArrowUpCircle,
+  Box,
   Cable,
   Check,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   CircleAlert,
   Cloud,
   Database,
+  FileText,
   Folder,
+  HardDrive,
   History,
   List,
   Layers3,
@@ -2402,11 +2406,37 @@ function LogsView({
   const containerRef = useRef<HTMLPreElement>(null);
   const shouldFollow = useRef(true);
   const isProgrammaticScroll = useRef(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [fontSize, setFontSize] = useState(11);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchIndex, setSearchIndex] = useState(0);
   const decreaseFontSize = () => setFontSize((s) => Math.max(8, s - 1));
   const increaseFontSize = () => setFontSize((s) => Math.min(20, s + 1));
 
-  // Met à jour shouldFollow uniquement sur les scrolls manuels de l'utilisateur
+  const matchIndices = useMemo(() => {
+    if (!searchQuery) return [];
+    const q = searchQuery.toLowerCase();
+    return lines.reduce<number[]>((acc, line, i) => {
+      if (line.line.toLowerCase().includes(q) || line.pod.toLowerCase().includes(q)) acc.push(i);
+      return acc;
+    }, []);
+  }, [lines, searchQuery]);
+
+  const clampedIndex = matchIndices.length > 0 ? Math.min(searchIndex, matchIndices.length - 1) : 0;
+
+  useEffect(() => { setSearchIndex(0); }, [searchQuery]);
+
+  useEffect(() => {
+    if (matchIndices.length === 0 || !containerRef.current) return;
+    const matchEl = containerRef.current.querySelector<HTMLElement>("[data-match-current]");
+    if (matchEl) {
+      shouldFollow.current = false;
+      isProgrammaticScroll.current = true;
+      matchEl.scrollIntoView({ block: "nearest" });
+      requestAnimationFrame(() => { isProgrammaticScroll.current = false; });
+    }
+  }, [clampedIndex, matchIndices]);
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -2419,7 +2449,6 @@ function LogsView({
     return () => container.removeEventListener("scroll", handleScroll);
   }, []);
 
-  // Scroll en bas si on suit, à chaque nouvelle ligne
   useEffect(() => {
     if (shouldFollow.current) {
       isProgrammaticScroll.current = true;
@@ -2428,18 +2457,57 @@ function LogsView({
     }
   }, [lines]);
 
+  const goToPrev = () => setSearchIndex(i => (i - 1 + matchIndices.length) % matchIndices.length);
+  const goToNext = () => setSearchIndex(i => (i + 1) % matchIndices.length);
+
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") { e.shiftKey ? goToPrev() : goToNext(); }
+    else if (e.key === "Escape") { setSearchQuery(""); searchInputRef.current?.blur(); }
+  };
+
   return (
     <div className="logs-view">
       <div className="logs-toolbar">
-        <span className="logs-toolbar-status">
-          <span>
-            {status.status === "loading"
-              ? previous ? "Loading previous container logs..." : "Connecting to log stream..."
-              : status.status === "error"
-              ? previous ? "Previous logs unavailable" : "Log stream failed"
-              : previous ? "Previous container logs" : "Streaming live logs"}
+        <span className="logs-toolbar-left">
+          <span className="logs-toolbar-status">
+            <span>
+              {status.status === "loading"
+                ? previous ? "Loading previous container logs..." : "Connecting to log stream..."
+                : status.status === "error"
+                ? previous ? "Previous logs unavailable" : "Log stream failed"
+                : previous ? "Previous container logs" : "Streaming live logs"}
+            </span>
+            {status.status === "loading" ? <Loader2 className="spin" size={14} /> : null}
           </span>
-          {status.status === "loading" ? <Loader2 className="spin" size={14} /> : null}
+          <span className="logs-search">
+            <Search size={12} className="logs-search-icon" />
+            <input
+              ref={searchInputRef}
+              className="logs-search-input"
+              type="text"
+              placeholder="Search logs..."
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              onKeyDown={handleSearchKeyDown}
+              aria-label="Search logs"
+            />
+            {searchQuery ? (
+              <>
+                <span className="logs-search-count">
+                  {matchIndices.length === 0 ? "0 / 0" : `${clampedIndex + 1} / ${matchIndices.length}`}
+                </span>
+                <button className="yaml-font-btn" onClick={goToPrev} aria-label="Previous match" disabled={matchIndices.length === 0} title="Previous match (Shift+Enter)">
+                  <ChevronUp size={12} />
+                </button>
+                <button className="yaml-font-btn" onClick={goToNext} aria-label="Next match" disabled={matchIndices.length === 0} title="Next match (Enter)">
+                  <ChevronDown size={12} />
+                </button>
+                <button className="yaml-font-btn" onClick={() => setSearchQuery("")} aria-label="Clear search">
+                  <X size={12} />
+                </button>
+              </>
+            ) : null}
+          </span>
         </span>
         <span className="logs-toolbar-controls">
           {onTogglePrevious ? (
@@ -2469,12 +2537,20 @@ function LogsView({
         {lines.length === 0 && status.status !== "error" ? (
           <span className="logs-empty">Waiting for logs...</span>
         ) : (
-          lines.map((entry, index) => (
-            <span className="log-line" key={`${entry.pod}-${entry.container}-${index}`}>
-              <span className="log-source">[{entry.pod}]</span>{" "}
-              <span>{renderLogLine(entry.line)}</span>
-            </span>
-          ))
+          lines.map((entry, index) => {
+            const matchPos = matchIndices.indexOf(index);
+            const isCurrent = matchPos !== -1 && matchPos === clampedIndex;
+            return (
+              <span
+                className={`log-line${isCurrent ? " log-line-current" : ""}`}
+                key={`${entry.pod}-${entry.container}-${index}`}
+                {...(isCurrent ? { "data-match-current": "true" } : {})}
+              >
+                <span className="log-source">[{entry.pod}]</span>{" "}
+                <span>{renderLogLine(entry.line, searchQuery)}</span>
+              </span>
+            );
+          })
         )}
         <div ref={endRef} />
       </pre>
@@ -3300,17 +3376,28 @@ function PortForwardServiceView({
   );
 }
 
-function renderLogLine(line: string) {
+function highlightMatches(text: string, query: string): React.ReactNode {
+  if (!query || !text.toLowerCase().includes(query.toLowerCase())) return text;
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const parts = text.split(new RegExp(`(${escaped})`, "gi"));
+  return parts.map((part, i) =>
+    part.toLowerCase() === query.toLowerCase()
+      ? <mark key={i} className="log-search-mark">{part}</mark>
+      : part || null
+  );
+}
+
+function renderLogLine(line: string, highlight = "") {
   const timestampPattern = /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)/g;
   const parts = line.split(timestampPattern);
 
   return parts.map((part, index) =>
     timestampPattern.test(part) ? (
       <span className="log-date" key={`${part}-${index}`}>
-        {part}
+        {highlightMatches(part, highlight)}
       </span>
     ) : (
-      <span key={`${part}-${index}`}>{part}</span>
+      <span key={`${part}-${index}`}>{highlightMatches(part, highlight)}</span>
     )
   );
 }
@@ -3414,11 +3501,23 @@ function iconForKind(kind: string) {
   }
 
   if (["Service", "Ingress"].includes(kind)) {
+    return <Network size={15} />;
+  }
+
+  if (kind === "Secret") {
     return <ShieldCheck size={15} />;
   }
 
-  if (["ConfigMap", "Secret", "PersistentVolumeClaim"].includes(kind)) {
-    return <Database size={15} />;
+  if (kind === "Pod") {
+    return <Box size={15} />;
+  }
+
+  if (kind === "ConfigMap") {
+    return <FileText size={15} />;
+  }
+
+  if (["PersistentVolumeClaim", "PersistentVolume"].includes(kind)) {
+    return <HardDrive size={15} />;
   }
 
   return <Layers3 size={15} />;

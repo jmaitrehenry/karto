@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What Karto Is
 
-A macOS desktop Kubernetes browser built with Tauri 2, React 19 / TypeScript (frontend), and Rust (backend). It reads existing kubeconfig contexts and lets users browse namespaces, inspect workloads, stream logs, review events, exec into containers, port-forward, and view raw YAML. It does **not** create, edit, or delete Kubernetes resources.
+A cross-platform desktop Kubernetes browser (macOS, Linux, Windows) built with Tauri 2, React 19 / TypeScript (frontend), and Rust (backend). It reads existing kubeconfig contexts and lets users browse namespaces, inspect workloads, stream logs, review events, exec into containers, port-forward, and view raw YAML. It does **not** create, edit, or delete Kubernetes resources.
 
 ## Commands
 
