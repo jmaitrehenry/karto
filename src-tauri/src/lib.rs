@@ -992,19 +992,87 @@ async fn list_workload_events(
     name: String,
 ) -> Result<Vec<EventSummary>, String> {
     let client = client_for_context(&context).await?;
-    let api: Api<CoreEvent> = Api::namespaced(client, &namespace);
+    let event_api: Api<CoreEvent> = Api::namespaced(client.clone(), &namespace);
+
     let selector = format!("involvedObject.kind={},involvedObject.name={}", kind, name);
-    let list = api
+    let list = event_api
         .list(&ListParams::default().fields(&selector))
         .await
         .map_err(kube_error)?;
-    let mut events = list
-        .items
-        .into_iter()
-        .map(event_summary)
-        .collect::<Vec<_>>();
+    let mut events: Vec<EventSummary> = list.items.into_iter().map(event_summary).collect();
+
+    // For Deployments, also collect events from owned ReplicaSets and their Pods
+    if kind == "Deployment" {
+        let rs_api: Api<ReplicaSet> = Api::namespaced(client.clone(), &namespace);
+        let all_rs = rs_api
+            .list(&ListParams::default())
+            .await
+            .map_err(kube_error)?;
+        let owned_rs: Vec<String> = all_rs
+            .items
+            .iter()
+            .filter(|rs| {
+                rs.owner_references()
+                    .iter()
+                    .any(|o| o.kind == "Deployment" && o.name == name)
+            })
+            .map(|rs| rs.name_any())
+            .collect();
+
+        for rs_name in &owned_rs {
+            let rs_selector = format!("involvedObject.kind=ReplicaSet,involvedObject.name={}", rs_name);
+            if let Ok(rs_list) = event_api.list(&ListParams::default().fields(&rs_selector)).await {
+                events.extend(rs_list.items.into_iter().map(event_summary));
+            }
+        }
+
+        // Pods owned by any of those ReplicaSets
+        let pod_api: Api<Pod> = Api::namespaced(client.clone(), &namespace);
+        let all_pods = pod_api.list(&ListParams::default()).await.map_err(kube_error)?;
+        let owned_pods: Vec<String> = all_pods
+            .items
+            .iter()
+            .filter(|pod| {
+                pod.owner_references()
+                    .iter()
+                    .any(|o| o.kind == "ReplicaSet" && owned_rs.contains(&o.name))
+            })
+            .map(|pod| pod.name_any())
+            .collect();
+
+        for pod_name in owned_pods {
+            let pod_selector = format!("involvedObject.kind=Pod,involvedObject.name={}", pod_name);
+            if let Ok(pod_list) = event_api.list(&ListParams::default().fields(&pod_selector)).await {
+                events.extend(pod_list.items.into_iter().map(event_summary));
+            }
+        }
+    }
+
+    // For StatefulSets and DaemonSets, collect events from owned Pods
+    if kind == "StatefulSet" || kind == "DaemonSet" {
+        let pod_api: Api<Pod> = Api::namespaced(client.clone(), &namespace);
+        let all_pods = pod_api.list(&ListParams::default()).await.map_err(kube_error)?;
+        let owned_pods: Vec<String> = all_pods
+            .items
+            .iter()
+            .filter(|pod| {
+                pod.owner_references()
+                    .iter()
+                    .any(|o| o.kind == kind && o.name == name)
+            })
+            .map(|pod| pod.name_any())
+            .collect();
+
+        for pod_name in owned_pods {
+            let pod_selector = format!("involvedObject.kind=Pod,involvedObject.name={}", pod_name);
+            if let Ok(pod_list) = event_api.list(&ListParams::default().fields(&pod_selector)).await {
+                events.extend(pod_list.items.into_iter().map(event_summary));
+            }
+        }
+    }
 
     events.sort_by(|left, right| right.last_seen.cmp(&left.last_seen));
+    events.dedup_by_key(|e| (e.reason.clone(), e.message.clone(), e.last_seen.clone()));
     Ok(events)
 }
 
