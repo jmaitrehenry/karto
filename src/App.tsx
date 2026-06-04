@@ -283,6 +283,10 @@ export function App() {
   const [activeDetailTab, setActiveDetailTab] = useState<DetailTab>("overview");
   const [logLines, setLogLines] = useState<LogLine[]>([]);
   const [logPrevious, setLogPrevious] = useState(false);
+
+  useEffect(() => {
+    setLogPrevious(false);
+  }, [selectedResource]);
   const [logStatus, setLogStatus] = useState<LoadState<null>>({
     status: "idle",
     data: null
