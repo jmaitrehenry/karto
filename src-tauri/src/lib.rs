@@ -63,6 +63,7 @@ struct WorkloadDetails {
     labels: Vec<KeyValue>,
     annotations: Vec<KeyValue>,
     pods: Vec<PodDetails>,
+    jobs: Vec<ResourceSummary>,
     services: Vec<ServiceDetails>,
     pvcs: Vec<PvcInfo>,
     config_warnings: Vec<ConfigWarning>,
@@ -729,6 +730,7 @@ async fn get_custom_resource_details(
         labels: key_values(labels),
         annotations: key_values(annotations),
         pods: Vec::new(),
+        jobs: Vec::new(),
         services: Vec::new(),
         pvcs: Vec::new(),
         config_warnings: Vec::new(),
@@ -803,11 +805,12 @@ async fn get_workload_details(
             Ok(generic_details(job, "Job", namespace, &status, None))
         }
         "CronJob" => {
-            let api: Api<CronJob> = Api::namespaced(client, &namespace);
+            let api: Api<CronJob> = Api::namespaced(client.clone(), &namespace);
             let cron_job = api.get(&name).await.map_err(kube_error)?;
-            Ok(generic_details(
-                cron_job, "CronJob", namespace, "Active", None,
-            ))
+            let jobs = jobs_for_cron_job(client, &namespace, &name).await?;
+            let mut details = generic_details(cron_job, "CronJob", namespace, "Active", None);
+            details.jobs = jobs;
+            Ok(details)
         }
         "Pod" => {
             let api: Api<Pod> = Api::namespaced(client.clone(), &namespace);
@@ -1333,6 +1336,7 @@ async fn workload_details_from_deployment(
         labels: key_values(labels),
         annotations: key_values(annotations),
         pods,
+        jobs: Vec::new(),
         services: services_for(client.clone(), &namespace, &template_labels).await?,
         pvcs: pvcs_for(client, &namespace, pod_spec).await?,
         config_warnings,
@@ -1428,6 +1432,7 @@ async fn workload_details_from_stateful_set(
         labels: key_values(labels),
         annotations: key_values(annotations),
         pods,
+        jobs: Vec::new(),
         services: services_for(client.clone(), &namespace, &template_labels).await?,
         pvcs: pvcs_for_stateful_set(client, &namespace, pod_spec, &claim_templates, &pod_names).await?,
         config_warnings,
@@ -1516,6 +1521,7 @@ async fn workload_details_from_daemon_set(
         labels: key_values(labels),
         annotations: key_values(annotations),
         pods,
+        jobs: Vec::new(),
         services: services_for(client.clone(), &namespace, &template_labels).await?,
         pvcs: pvcs_for(client, &namespace, pod_spec).await?,
         config_warnings,
@@ -1613,6 +1619,7 @@ fn pod_details(pod: Pod, namespace: String, status: &str) -> WorkloadDetails {
         labels: key_values(labels),
         annotations: key_values(annotations),
         pods: containers,
+        jobs: Vec::new(),
         services: Vec::new(),
         pvcs: Vec::new(),
         config_warnings,
@@ -1704,6 +1711,7 @@ fn service_details(service: Service, namespace: String) -> WorkloadDetails {
         labels: key_values(labels),
         annotations: key_values(annotations),
         pods: Vec::new(),
+        jobs: Vec::new(),
         services: Vec::new(),
         pvcs: Vec::new(),
         config_warnings: Vec::new(),
@@ -1763,6 +1771,7 @@ fn pvc_details(pvc: PersistentVolumeClaim, namespace: String) -> WorkloadDetails
         labels: key_values(labels),
         annotations: key_values(annotations),
         pods: Vec::new(),
+        jobs: Vec::new(),
         services: Vec::new(),
         pvcs: Vec::new(),
         config_warnings: Vec::new(),
@@ -1806,6 +1815,7 @@ where
         labels: key_values(labels),
         annotations: key_values(annotations),
         pods: Vec::new(),
+        jobs: Vec::new(),
         services: Vec::new(),
         pvcs: Vec::new(),
         config_warnings: Vec::new(),
@@ -1822,6 +1832,34 @@ where
         pvc_access_modes: Vec::new(),
         pvc_volume_name: None,
     }
+}
+
+async fn jobs_for_cron_job(
+    client: Client,
+    namespace: &str,
+    cron_job_name: &str,
+) -> Result<Vec<ResourceSummary>, String> {
+    let api: Api<Job> = Api::namespaced(client, namespace);
+    let jobs = api
+        .list(&ListParams::default())
+        .await
+        .map_err(kube_error)?;
+
+    Ok(jobs
+        .items
+        .into_iter()
+        .filter(|job| {
+            job.meta()
+                .owner_references
+                .as_ref()
+                .map(|refs| {
+                    refs.iter()
+                        .any(|r| r.kind == "CronJob" && r.name == cron_job_name)
+                })
+                .unwrap_or(false)
+        })
+        .map(|job| job_summary(job, "Job"))
+        .collect())
 }
 
 async fn pods_for(
@@ -2134,6 +2172,15 @@ async fn workload_selector(
             Ok(daemon_set
                 .spec
                 .and_then(|spec| spec.selector.match_labels)
+                .unwrap_or_default())
+        }
+        "Job" => {
+            let api: Api<Job> = Api::namespaced(client, namespace);
+            let job = api.get(name).await.map_err(kube_error)?;
+            Ok(job
+                .spec
+                .and_then(|spec| spec.selector)
+                .and_then(|selector| selector.match_labels)
                 .unwrap_or_default())
         }
         _ => Err(format!("Logs are not available for kind `{}` yet.", kind)),
