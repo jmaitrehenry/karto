@@ -144,6 +144,7 @@ type WorkloadDetails = {
   labels: KeyValue[];
   annotations: KeyValue[];
   pods: PodDetails[];
+  jobs: ResourceSummary[];
   services: ServiceDetails[];
   pvcs: PvcInfo[];
   config_warnings: ConfigWarning[];
@@ -2155,6 +2156,7 @@ function WorkloadDetailsView({
   ];
   const hasResourceTotals = resourceTotals.some(hasMeaningfulResourceValue);
   const hasPods = workload.pods.length > 0;
+  const hasJobs = (workload.jobs?.length ?? 0) > 0;
   const hasServices = workload.services.length > 0;
   const isWorkload = supportsLogs(fallback);
   const isPod = fallback.kind === "Pod";
@@ -2321,6 +2323,31 @@ function WorkloadDetailsView({
                     </span>
                   ]
             )}
+          />
+        </section>
+      ) : null}
+
+      {fallback.kind === "CronJob" || hasJobs ? (
+        <section className="details-section">
+          <h2>Jobs</h2>
+          <DetailsTable
+            empty="No jobs found for this CronJob."
+            headers={["Name", "Status", "Age"]}
+            onRowClick={(index) => {
+              const job = workload.jobs[index];
+              onOpenResource({
+                name: job.name,
+                kind: "Job",
+                namespace: workload.namespace,
+                status: job.status,
+                age: job.age
+              });
+            }}
+            rows={(workload.jobs ?? []).map((job) => [
+              job.name,
+              <span className={`status ${statusTone(job.status)}`} key={job.name}>{job.status}</span>,
+              job.age ?? "-"
+            ])}
           />
         </section>
       ) : null}
@@ -3528,7 +3555,7 @@ function iconForKind(kind: string) {
 }
 
 function supportsLogs(resource: ResourceSummary) {
-  return ["Deployment", "StatefulSet", "DaemonSet", "Pod"].includes(resource.kind);
+  return ["Deployment", "StatefulSet", "DaemonSet", "Pod", "Job"].includes(resource.kind);
 }
 
 function hasMeaningfulResourceValue(value: string) {
