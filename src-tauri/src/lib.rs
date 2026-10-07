@@ -79,6 +79,21 @@ struct WorkloadDetails {
     pvc_access_modes: Vec<String>,
     pvc_volume_name: Option<String>,
     has_previous_logs: bool,
+    default_service_account: bool,
+    host_network: bool,
+    host_pid: bool,
+    host_ipc: bool,
+    spread_verdict: Option<String>,
+    containers: Vec<ContainerDiagnostics>,
+}
+
+#[derive(Debug, Serialize)]
+struct ContainerDiagnostics {
+    container: String,
+    has_readiness_probe: bool,
+    has_liveness_probe: bool,
+    has_startup_probe: bool,
+    privileged: bool,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -109,6 +124,7 @@ struct PodDetails {
     restarts: i32,
     status: String,
     has_previous_logs: bool,
+    restart_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -237,6 +253,14 @@ struct NodeWorkloads {
     replica_sets: Vec<ResourceSummary>,
     pods: Vec<ResourceSummary>,
     all_pods: Vec<ResourceSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct NodePodStats {
+    node_name: String,
+    pod_count: i32,
+    allocatable_pods: Option<i32>,
+    capacity_pods: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -454,6 +478,55 @@ async fn list_nodes(context: String) -> Result<Vec<ResourceSummary>, String> {
     let mut nodes = list.items.into_iter().map(node_summary).collect::<Vec<_>>();
     nodes.sort_by(|l, r| l.name.cmp(&r.name));
     Ok(nodes)
+}
+
+#[tauri::command]
+async fn list_node_pod_stats(context: String) -> Result<Vec<NodePodStats>, String> {
+    let client = client_for_context(&context).await?;
+
+    let nodes_api: Api<Node> = Api::all(client.clone());
+    let nodes = nodes_api.list(&ListParams::default()).await.map_err(kube_error)?;
+
+    let pods_api: Api<Pod> = Api::all(client);
+    let pods = pods_api.list(&ListParams::default()).await.map_err(kube_error)?;
+
+    let mut pod_counts: HashMap<String, i32> = HashMap::new();
+    for pod in &pods.items {
+        if let Some(node_name) = pod.spec.as_ref().and_then(|spec| spec.node_name.clone()) {
+            *pod_counts.entry(node_name).or_insert(0) += 1;
+        }
+    }
+
+    let mut stats = nodes
+        .items
+        .into_iter()
+        .filter_map(|node| {
+            let node_name = node.name_any();
+            let allocatable_pods = node
+                .status
+                .as_ref()
+                .and_then(|status| status.allocatable.as_ref())
+                .and_then(|allocatable| allocatable.get("pods"))
+                .and_then(|quantity| quantity.0.parse::<i32>().ok());
+            let capacity_pods = node
+                .status
+                .as_ref()
+                .and_then(|status| status.capacity.as_ref())
+                .and_then(|capacity| capacity.get("pods"))
+                .and_then(|quantity| quantity.0.parse::<i32>().ok());
+            let pod_count = pod_counts.get(&node_name).copied().unwrap_or(0);
+
+            Some(NodePodStats {
+                node_name,
+                pod_count,
+                allocatable_pods,
+                capacity_pods,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    stats.sort_by(|left, right| left.node_name.cmp(&right.node_name));
+    Ok(stats)
 }
 
 #[tauri::command]
@@ -746,6 +819,12 @@ async fn get_custom_resource_details(
         pvc_access_modes: Vec::new(),
         pvc_volume_name: None,
         has_previous_logs: false,
+        default_service_account: false,
+        host_network: false,
+        host_pid: false,
+        host_ipc: false,
+        spread_verdict: None,
+        containers: Vec::new(),
     })
 }
 
@@ -979,6 +1058,58 @@ async fn start_workload_log_stream(
         .insert(stream_id, handles);
 
     Ok(())
+}
+
+#[tauri::command]
+async fn create_job_from_cronjob(
+    context: String,
+    namespace: String,
+    cron_job_name: String,
+    job_name: String,
+) -> Result<String, String> {
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
+
+    let job_name = job_name.trim().to_string();
+    if job_name.is_empty() {
+        return Err("Job name is required".to_string());
+    }
+    let client = client_for_context(&context).await?;
+    let cron_api: Api<CronJob> = Api::namespaced(client.clone(), &namespace);
+    let cron_job = cron_api.get(&cron_job_name).await.map_err(kube_error)?;
+    let template = cron_job
+        .spec
+        .as_ref()
+        .map(|spec| spec.job_template.clone())
+        .ok_or_else(|| "CronJob has no spec".to_string())?;
+
+    let mut annotations = template
+        .metadata
+        .as_ref()
+        .and_then(|m| m.annotations.clone())
+        .unwrap_or_default();
+    annotations.insert("cronjob.kubernetes.io/instantiate".to_string(), "manual".to_string());
+
+    let mut job = Job::default();
+    job.metadata.name = Some(job_name);
+    job.metadata.namespace = Some(namespace.clone());
+    job.metadata.labels = template.metadata.as_ref().and_then(|m| m.labels.clone());
+    job.metadata.annotations = Some(annotations);
+    job.metadata.owner_references = Some(vec![OwnerReference {
+        api_version: "batch/v1".to_string(),
+        kind: "CronJob".to_string(),
+        name: cron_job.name_any(),
+        uid: cron_job.metadata.uid.clone().unwrap_or_default(),
+        controller: Some(true),
+        block_owner_deletion: Some(true),
+    }]);
+    job.spec = template.spec;
+
+    let jobs: Api<Job> = Api::namespaced(client, &namespace);
+    let created = jobs
+        .create(&Default::default(), &job)
+        .await
+        .map_err(kube_error)?;
+    Ok(created.name_any())
 }
 
 #[tauri::command]
@@ -1322,7 +1453,12 @@ async fn workload_details_from_deployment(
         .spec
         .as_ref()
         .and_then(|spec| spec.template.spec.as_ref());
-    let pods = pods_for(client.clone(), &namespace, &selector).await?;
+    let container_diagnostics = pod_spec.map(container_diagnostics_for).unwrap_or_default();
+    let default_service_account = pod_spec.map(uses_default_service_account).unwrap_or(true);
+    let (host_network, host_pid, host_ipc) = pod_spec.map(host_namespace_flags).unwrap_or((false, false, false));
+    let (pods, placements) = pods_for(client.clone(), &namespace, &selector).await?;
+    let node_zone = node_zone_map(client.clone()).await?;
+    let spread_verdict = classify_spread(&placements, &node_zone);
     let has_previous_logs = pods.iter().any(|p| p.has_previous_logs);
     Ok(WorkloadDetails {
         name: deployment.name_any(),
@@ -1352,6 +1488,12 @@ async fn workload_details_from_deployment(
         pvc_access_modes: Vec::new(),
         pvc_volume_name: None,
         has_previous_logs,
+        default_service_account,
+        host_network,
+        host_pid,
+        host_ipc,
+        spread_verdict,
+        containers: container_diagnostics,
     })
 }
 
@@ -1411,13 +1553,18 @@ async fn workload_details_from_stateful_set(
         .spec
         .as_ref()
         .and_then(|spec| spec.template.spec.as_ref());
+    let container_diagnostics = pod_spec.map(container_diagnostics_for).unwrap_or_default();
+    let default_service_account = pod_spec.map(uses_default_service_account).unwrap_or(true);
+    let (host_network, host_pid, host_ipc) = pod_spec.map(host_namespace_flags).unwrap_or((false, false, false));
     let claim_templates: Vec<PersistentVolumeClaim> = stateful_set
         .spec
         .as_ref()
         .and_then(|spec| spec.volume_claim_templates.clone())
         .unwrap_or_default();
     let ss_name = stateful_set.name_any();
-    let pods = pods_for(client.clone(), &namespace, &selector).await?;
+    let (pods, placements) = pods_for(client.clone(), &namespace, &selector).await?;
+    let node_zone = node_zone_map(client.clone()).await?;
+    let spread_verdict = classify_spread(&placements, &node_zone);
     let pod_names: Vec<String> = pods.iter().map(|p| p.name.clone()).collect();
     let has_previous_logs = pods.iter().any(|p| p.has_previous_logs);
     Ok(WorkloadDetails {
@@ -1448,6 +1595,12 @@ async fn workload_details_from_stateful_set(
         pvc_access_modes: Vec::new(),
         pvc_volume_name: None,
         has_previous_logs,
+        default_service_account,
+        host_network,
+        host_pid,
+        host_ipc,
+        spread_verdict,
+        containers: container_diagnostics,
     })
 }
 
@@ -1507,7 +1660,10 @@ async fn workload_details_from_daemon_set(
         .spec
         .as_ref()
         .and_then(|spec| spec.template.spec.as_ref());
-    let pods = pods_for(client.clone(), &namespace, &selector).await?;
+    let container_diagnostics = pod_spec.map(container_diagnostics_for).unwrap_or_default();
+    let default_service_account = pod_spec.map(uses_default_service_account).unwrap_or(true);
+    let (host_network, host_pid, host_ipc) = pod_spec.map(host_namespace_flags).unwrap_or((false, false, false));
+    let (pods, _placements) = pods_for(client.clone(), &namespace, &selector).await?;
     let has_previous_logs = pods.iter().any(|p| p.has_previous_logs);
     Ok(WorkloadDetails {
         name: daemon_set.name_any(),
@@ -1537,6 +1693,12 @@ async fn workload_details_from_daemon_set(
         pvc_access_modes: Vec::new(),
         pvc_volume_name: None,
         has_previous_logs,
+        default_service_account,
+        host_network,
+        host_pid,
+        host_ipc,
+        spread_verdict: None,
+        containers: container_diagnostics,
     })
 }
 
@@ -1590,6 +1752,11 @@ fn pod_details(pod: Pod, namespace: String, status: &str) -> WorkloadDetails {
             } else {
                 "Unknown".to_string()
             };
+            let restart_reason = cs
+                .last_state
+                .as_ref()
+                .and_then(|s| s.terminated.as_ref())
+                .and_then(|t| t.reason.clone());
             PodDetails {
                 name: cs.name.clone(),
                 age: None,
@@ -1597,6 +1764,7 @@ fn pod_details(pod: Pod, namespace: String, status: &str) -> WorkloadDetails {
                 restarts: cs.restart_count,
                 status: container_status,
                 has_previous_logs: cs.last_state.as_ref().map(|s| s.terminated.is_some()).unwrap_or(false),
+                restart_reason,
             }
         })
         .collect();
@@ -1606,6 +1774,21 @@ fn pod_details(pod: Pod, namespace: String, status: &str) -> WorkloadDetails {
         .as_ref()
         .map(config_warnings_for)
         .unwrap_or_default();
+    let container_diagnostics = pod
+        .spec
+        .as_ref()
+        .map(container_diagnostics_for)
+        .unwrap_or_default();
+    let default_service_account = pod
+        .spec
+        .as_ref()
+        .map(uses_default_service_account)
+        .unwrap_or(true);
+    let (host_network, host_pid, host_ipc) = pod
+        .spec
+        .as_ref()
+        .map(host_namespace_flags)
+        .unwrap_or((false, false, false));
 
     WorkloadDetails {
         name: pod.name_any(),
@@ -1635,6 +1818,12 @@ fn pod_details(pod: Pod, namespace: String, status: &str) -> WorkloadDetails {
         pvc_access_modes: Vec::new(),
         pvc_volume_name: None,
         has_previous_logs,
+        default_service_account,
+        host_network,
+        host_pid,
+        host_ipc,
+        spread_verdict: None,
+        containers: container_diagnostics,
     }
 }
 
@@ -1727,6 +1916,12 @@ fn service_details(service: Service, namespace: String) -> WorkloadDetails {
         pvc_access_modes: Vec::new(),
         pvc_volume_name: None,
         has_previous_logs: false,
+        default_service_account: false,
+        host_network: false,
+        host_pid: false,
+        host_ipc: false,
+        spread_verdict: None,
+        containers: Vec::new(),
     }
 }
 
@@ -1787,6 +1982,12 @@ fn pvc_details(pvc: PersistentVolumeClaim, namespace: String) -> WorkloadDetails
         pvc_access_modes: access_modes,
         pvc_volume_name: volume_name,
         has_previous_logs: false,
+        default_service_account: false,
+        host_network: false,
+        host_pid: false,
+        host_ipc: false,
+        spread_verdict: None,
+        containers: Vec::new(),
     }
 }
 
@@ -1831,6 +2032,12 @@ where
         pvc_storage_class: None,
         pvc_access_modes: Vec::new(),
         pvc_volume_name: None,
+        default_service_account: false,
+        host_network: false,
+        host_pid: false,
+        host_ipc: false,
+        spread_verdict: None,
+        containers: Vec::new(),
     }
 }
 
@@ -1866,9 +2073,9 @@ async fn pods_for(
     client: Client,
     namespace: &str,
     selector: &BTreeMap<String, String>,
-) -> Result<Vec<PodDetails>, String> {
+) -> Result<(Vec<PodDetails>, Vec<Option<String>>), String> {
     if selector.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
 
     let api: Api<Pod> = Api::namespaced(client, namespace);
@@ -1881,6 +2088,7 @@ async fn pods_for(
         .items
         .into_iter()
         .map(|pod| {
+            let node_name = pod.spec.as_ref().and_then(|spec| spec.node_name.clone());
             let statuses = pod
                 .status
                 .as_ref()
@@ -1907,20 +2115,78 @@ async fn pods_for(
                     })
                 })
                 .unwrap_or(false);
+            let restart_reason = pod
+                .status
+                .as_ref()
+                .and_then(|s| s.container_statuses.as_ref())
+                .and_then(|statuses| {
+                    statuses.iter().find_map(|cs| {
+                        cs.last_state
+                            .as_ref()
+                            .and_then(|s| s.terminated.as_ref())
+                            .and_then(|t| t.reason.clone())
+                    })
+                });
 
-            PodDetails {
-                name: pod.name_any(),
-                age: age_for(&pod),
-                containers: format!("{}/{}", ready, total),
-                restarts,
-                status,
-                has_previous_logs,
-            }
+            (
+                PodDetails {
+                    name: pod.name_any(),
+                    age: age_for(&pod),
+                    containers: format!("{}/{}", ready, total),
+                    restarts,
+                    status,
+                    has_previous_logs,
+                    restart_reason,
+                },
+                node_name,
+            )
         })
         .collect::<Vec<_>>();
 
-    pods.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(pods)
+    pods.sort_by(|left, right| left.0.name.cmp(&right.0.name));
+    Ok(pods.into_iter().unzip())
+}
+
+fn classify_spread(placements: &[Option<String>], node_zone: &HashMap<String, String>) -> Option<String> {
+    let nodes: Vec<&String> = placements.iter().filter_map(|p| p.as_ref()).collect();
+
+    if nodes.len() <= 1 {
+        return Some("SINGLE".to_string());
+    }
+
+    let unique_nodes: HashSet<&String> = nodes.iter().copied().collect();
+    if unique_nodes.len() <= 1 {
+        return Some("SPOF-NODE".to_string());
+    }
+
+    let zones: HashSet<&str> = nodes
+        .iter()
+        .filter_map(|node| node_zone.get(*node).map(|z| z.as_str()))
+        .collect();
+    if zones.len() <= 1 {
+        return Some("SPOF-ZONE".to_string());
+    }
+
+    Some("SPREAD".to_string())
+}
+
+async fn node_zone_map(client: Client) -> Result<HashMap<String, String>, String> {
+    let api: Api<Node> = Api::all(client);
+    let nodes = api.list(&ListParams::default()).await.map_err(kube_error)?;
+
+    Ok(nodes
+        .items
+        .into_iter()
+        .filter_map(|node| {
+            let name = node.metadata.name.clone()?;
+            let labels = node.metadata.labels.as_ref();
+            let zone = labels
+                .and_then(|l| l.get("topology.kubernetes.io/zone"))
+                .or_else(|| labels.and_then(|l| l.get("failure-domain.beta.kubernetes.io/zone")))
+                .cloned();
+            zone.map(|zone| (name, zone))
+        })
+        .collect())
 }
 
 async fn services_for(
@@ -2992,6 +3258,46 @@ fn config_warnings_for(pod_spec: &k8s_openapi::api::core::v1::PodSpec) -> Vec<Co
         .collect()
 }
 
+fn container_diagnostics_for(
+    pod_spec: &k8s_openapi::api::core::v1::PodSpec,
+) -> Vec<ContainerDiagnostics> {
+    pod_spec
+        .containers
+        .iter()
+        .map(|container| {
+            let privileged = container
+                .security_context
+                .as_ref()
+                .and_then(|sc| sc.privileged)
+                .unwrap_or(false);
+            ContainerDiagnostics {
+                container: container.name.clone(),
+                has_readiness_probe: container.readiness_probe.is_some(),
+                has_liveness_probe: container.liveness_probe.is_some(),
+                has_startup_probe: container.startup_probe.is_some(),
+                privileged,
+            }
+        })
+        .collect()
+}
+
+fn uses_default_service_account(pod_spec: &k8s_openapi::api::core::v1::PodSpec) -> bool {
+    match pod_spec.service_account_name.as_deref() {
+        None => true,
+        Some("") => true,
+        Some("default") => true,
+        Some(_) => false,
+    }
+}
+
+fn host_namespace_flags(pod_spec: &k8s_openapi::api::core::v1::PodSpec) -> (bool, bool, bool) {
+    (
+        pod_spec.host_network.unwrap_or(false),
+        pod_spec.host_pid.unwrap_or(false),
+        pod_spec.host_ipc.unwrap_or(false),
+    )
+}
+
 fn parse_cpu(value: &str) -> Option<f64> {
     if let Some(millicores) = value.strip_suffix('m') {
         return millicores.parse::<f64>().ok().map(|value| value / 1000.0);
@@ -3314,10 +3620,12 @@ pub fn run() {
             list_contexts,
             list_namespaces,
             list_nodes,
+            list_node_pod_stats,
             list_resources,
             get_node_workloads,
             start_workload_log_stream,
             stop_log_stream,
+            create_job_from_cronjob,
             start_port_forward,
             start_service_port_forward,
             stop_port_forward,

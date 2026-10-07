@@ -1335,6 +1335,25 @@ select {
   min-width: 0;
 }
 
+.security-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 650;
+  background: color-mix(in srgb, var(--mauve) 18%, transparent);
+  color: var(--mauve);
+  margin-right: 6px;
+}
+
+.security-flag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
 .events-view {
   padding-top: 8px;
 }
@@ -1830,4 +1849,44 @@ select.port-input {
 .port-forward-stop:hover {
   color: var(--red);
   border-color: var(--red);
+}
+
+.create-job-button,
+.create-job-form button {
+  padding: 5px 12px;
+  border: 1px solid var(--border, #8884);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.create-job-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.create-job-form input {
+  flex: 1;
+  min-width: 220px;
+  padding: 5px 8px;
+  border: 1px solid var(--border, #8884);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.create-job-button,
+.create-job-form {
+  margin-bottom: 10px;
+}
+
+.create-job-error {
+  width: 100%;
+  color: #d33;
+  font-size: 12px;
 }
