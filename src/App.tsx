@@ -99,6 +99,15 @@ type PodDetails = {
   containers: string;
   restarts: number;
   status: string;
+  restart_reason?: string;
+};
+
+type ContainerDiagnostics = {
+  container: string;
+  has_readiness_probe: boolean;
+  has_liveness_probe: boolean;
+  has_startup_probe: boolean;
+  privileged: boolean;
 };
 
 type ServiceDetails = {
@@ -149,6 +158,12 @@ type WorkloadDetails = {
   pvcs: PvcInfo[];
   config_warnings: ConfigWarning[];
   has_previous_logs: boolean;
+  default_service_account: boolean;
+  host_network: boolean;
+  host_pid: boolean;
+  host_ipc: boolean;
+  spread_verdict?: string;
+  containers: ContainerDiagnostics[];
 };
 
 type LogLine = {
@@ -175,6 +190,13 @@ type NodeWorkloads = {
   replica_sets: ResourceSummary[];
   pods: ResourceSummary[];
   all_pods: ResourceSummary[];
+};
+
+type NodePodStats = {
+  node_name: string;
+  pod_count: number;
+  allocatable_pods?: number;
+  capacity_pods?: number;
 };
 
 type DetailTab = "overview" | "logs" | "events" | "yaml" | "terminal" | "ports";
@@ -307,6 +329,10 @@ export function App() {
     status: "idle",
     data: []
   });
+  const [nodePodStats, setNodePodStats] = useState<LoadState<NodePodStats[]>>({
+    status: "idle",
+    data: []
+  });
   const [selectedNode, setSelectedNode] = useState<ResourceSummary | null>(null);
   const [nodeTab, setNodeTab] = useState<"applications" | "pods">("applications");
   const [nodeWorkloads, setNodeWorkloads] = useState<LoadState<NodeWorkloads | null>>({
@@ -400,6 +426,7 @@ export function App() {
   useEffect(() => {
     if (!selectedContext || resourceView !== "nodes") return;
     void loadNodes(selectedContext);
+    void loadNodePodStats(selectedContext);
   }, [selectedContext, resourceView]);
 
   useEffect(() => {
@@ -662,6 +689,17 @@ export function App() {
       setNodes({ status: "idle", data: nextNodes });
     } catch (error) {
       setNodes({ status: "error", data: [], message: String(error) });
+    }
+  }
+
+  async function loadNodePodStats(context: string) {
+    setNodePodStats((current) => ({ status: "loading", data: current.data }));
+
+    try {
+      const nextStats = await invoke<NodePodStats[]>("list_node_pod_stats", { context });
+      setNodePodStats({ status: "idle", data: nextStats });
+    } catch (error) {
+      setNodePodStats({ status: "error", data: [], message: String(error) });
     }
   }
 
@@ -1423,6 +1461,7 @@ export function App() {
                 }
                 if (selectedContext && resourceView === "nodes") {
                   void loadNodes(selectedContext);
+                  void loadNodePodStats(selectedContext);
                 }
                 if (selectedContext && selectedNode) {
                   void loadNodeWorkloads(selectedContext, selectedNode.name);
@@ -1568,6 +1607,7 @@ export function App() {
             node={selectedNode}
             tab={nodeTab}
             workloads={nodeWorkloads}
+            podStats={nodePodStats.status === "error" ? [] : nodePodStats.data}
             onOpenResource={(resource) => openResource(resource, false)}
           />
         ) : resourceView === "nodes" ? (
@@ -1575,6 +1615,7 @@ export function App() {
             loading={nodes.status === "loading"}
             nodes={nodes.status === "error" ? [] : nodes.data}
             error={nodes.status === "error" ? nodes.message : undefined}
+            podStats={nodePodStats.status === "error" ? [] : nodePodStats.data}
             onSelectNode={setSelectedNode}
           />
         ) : resourceView === "crds" ? (
@@ -1677,17 +1718,28 @@ function ResourceTable({
   );
 }
 
+function podCapacityTone(count: number, capacity?: number) {
+  if (!capacity || capacity <= 0) return undefined;
+  const ratio = count / capacity;
+  if (ratio >= 1) return "bad";
+  if (ratio >= 0.9) return "warn";
+  return undefined;
+}
+
 function NodeListView({
   error,
   loading,
   nodes,
+  podStats,
   onSelectNode
 }: {
   error?: string;
   loading: boolean;
   nodes: ResourceSummary[];
+  podStats: NodePodStats[];
   onSelectNode: (node: ResourceSummary) => void;
 }) {
+  const statsByNode = new Map(podStats.map((stat) => [stat.node_name, stat]));
   if (loading) {
     return (
       <div className="table-placeholder">
@@ -1725,31 +1777,49 @@ function NodeListView({
             <th>Name</th>
             <th>Status</th>
             <th>Version</th>
+            <th>Pods</th>
             <th>Age</th>
           </tr>
         </thead>
         <tbody>
-          {nodes.map((node) => (
-            <tr
-              className="clickable-row"
-              key={node.name}
-              onClick={() => onSelectNode(node)}
-            >
-              <td>
-                <span className="resource-name">
-                  <Server size={15} />
-                  {node.name}
-                </span>
-              </td>
-              <td>
-                <span className={`status ${statusTone(node.status)}`}>
-                  {node.status}
-                </span>
-              </td>
-              <td>{node.ready ?? "-"}</td>
-              <td>{node.age ?? "-"}</td>
-            </tr>
-          ))}
+          {nodes.map((node) => {
+            const stat = statsByNode.get(node.name);
+            const tone = stat ? podCapacityTone(stat.pod_count, stat.capacity_pods) : undefined;
+            return (
+              <tr
+                className="clickable-row"
+                key={node.name}
+                onClick={() => onSelectNode(node)}
+              >
+                <td>
+                  <span className="resource-name">
+                    <Server size={15} />
+                    {node.name}
+                  </span>
+                </td>
+                <td>
+                  <span className={`status ${statusTone(node.status)}`}>
+                    {node.status}
+                  </span>
+                </td>
+                <td>{node.ready ?? "-"}</td>
+                <td>
+                  {stat ? (
+                    tone ? (
+                      <span className={`status ${tone}`}>
+                        {stat.pod_count}/{stat.capacity_pods ?? "-"}
+                      </span>
+                    ) : (
+                      `${stat.pod_count}/${stat.capacity_pods ?? "-"}`
+                    )
+                  ) : (
+                    "-"
+                  )}
+                </td>
+                <td>{node.age ?? "-"}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -1760,13 +1830,16 @@ function NodeDetailsView({
   node,
   onOpenResource,
   tab,
-  workloads
+  workloads,
+  podStats
 }: {
   node: ResourceSummary;
   onOpenResource: (resource: ResourceSummary) => void;
   tab: "applications" | "pods";
   workloads: LoadState<NodeWorkloads | null>;
+  podStats: NodePodStats[];
 }) {
+  const stat = podStats.find((entry) => entry.node_name === node.name);
   if (workloads.status === "loading") {
     return (
       <div className="table-placeholder">
@@ -1809,6 +1882,20 @@ function NodeDetailsView({
           {node.ready ? <span>{node.ready}</span> : null}
         </div>
       </div>
+
+      {stat ? (
+        <section className="details-section">
+          <h2>Capacity</h2>
+          <div className="overview-grid single">
+            <div className="info-card">
+              <InfoRow label="Pods" value={`${stat.pod_count} / ${stat.capacity_pods ?? "-"}`} />
+              {stat.allocatable_pods ? (
+                <InfoRow label="Allocatable" value={String(stat.allocatable_pods)} />
+              ) : null}
+            </div>
+          </div>
+        </section>
+      ) : null}
 
       {tab === "applications" ? (
         <>
@@ -2056,6 +2143,87 @@ function CrdBrowserView({
   );
 }
 
+function CreateJobForm({
+  context,
+  cronJobName,
+  namespace,
+  onCreated
+}: {
+  context: string;
+  cronJobName: string;
+  namespace: string;
+  onCreated: (jobName: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function defaultName() {
+    return `${cronJobName}-${Math.floor(Date.now() / 1000)}`.slice(0, 63);
+  }
+
+  async function submit() {
+    setBusy(true);
+    setError(null);
+    try {
+      const created = await invoke<string>("create_job_from_cronjob", {
+        context,
+        namespace,
+        cronJobName,
+        jobName: name.trim()
+      });
+      setOpen(false);
+      onCreated(created);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <button
+        className="create-job-button"
+        onClick={() => {
+          setName(defaultName());
+          setError(null);
+          setOpen(true);
+        }}
+        type="button"
+      >
+        Create job
+      </button>
+    );
+  }
+
+  return (
+    <form
+      className="create-job-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (name.trim() && !busy) void submit();
+      }}
+    >
+      <input
+        autoFocus
+        onChange={(event) => setName(event.target.value)}
+        placeholder="Job name"
+        spellCheck={false}
+        value={name}
+      />
+      <button disabled={busy || !name.trim()} type="submit">
+        {busy ? "Creating..." : "Create"}
+      </button>
+      <button disabled={busy} onClick={() => setOpen(false)} type="button">
+        Cancel
+      </button>
+      {error ? <span className="create-job-error">{error}</span> : null}
+    </form>
+  );
+}
+
 function WorkloadDetailsView({
   activeTab,
   allPortForwards,
@@ -2201,6 +2369,22 @@ function WorkloadDetailsView({
             <InfoRow label="Namespace" value={workload.namespace} />
             <InfoRow label="Status" value={workload.status} />
             <InfoRow label="Age" value={workload.age ?? "-"} />
+            {workload.spread_verdict ? (
+              <InfoRow label="Placement" value={<SpreadBadge verdict={workload.spread_verdict} />} />
+            ) : null}
+            {workload.host_network || workload.host_pid || workload.host_ipc || workload.containers.some((c) => c.privileged) ? (
+              <InfoRow
+                label="Security"
+                value={
+                  <div className="security-flag-row">
+                    {workload.host_network ? <span className="security-flag">hostNetwork</span> : null}
+                    {workload.host_pid ? <span className="security-flag">hostPID</span> : null}
+                    {workload.host_ipc ? <span className="security-flag">hostIPC</span> : null}
+                    {workload.containers.some((c) => c.privileged) ? <span className="security-flag">Privileged</span> : null}
+                  </div>
+                }
+              />
+            ) : null}
             {workload.internal_traffic_policy ? (
               <InfoRow label="Internal Traffic Policy" value={workload.internal_traffic_policy} />
             ) : null}
@@ -2269,7 +2453,7 @@ function WorkloadDetailsView({
         </div>
       </section>
 
-      {workload.config_warnings.length > 0 ? (
+      {workload.config_warnings.length > 0 || workload.default_service_account ? (
         <section className="details-section">
           <h2>Warnings</h2>
           <ul className="warnings-list">
@@ -2280,6 +2464,15 @@ function WorkloadDetailsView({
                 <span className="warning-message">{warning.message}</span>
               </li>
             ))}
+            {workload.default_service_account ? (
+              <li className="warning-item">
+                <TriangleAlert size={14} className="warning-icon" />
+                <span className="warning-container">ServiceAccount</span>
+                <span className="warning-message">
+                  Uses the default ServiceAccount — consider a dedicated, least-privilege service account.
+                </span>
+              </li>
+            ) : null}
           </ul>
         </section>
       ) : null}
@@ -2311,7 +2504,7 @@ function WorkloadDetailsView({
                     String(pod.restarts),
                     pod.status === "Completed"
                       ? <Check size={14} className="status-completed" key={pod.name} />
-                      : <span className={`status ${statusTone(pod.status)}`} key={pod.name}>{pod.status}</span>
+                      : <span className={`status ${statusTone(pod.status)}`} key={pod.name}>{pod.status}{pod.restart_reason ? ` (${pod.restart_reason})` : ""}</span>
                   ]
                 : [
                     pod.name,
@@ -2319,7 +2512,7 @@ function WorkloadDetailsView({
                     pod.containers,
                     String(pod.restarts),
                     <span className={`status ${statusTone(pod.status)}`} key={pod.name}>
-                      {pod.status}
+                      {pod.status}{pod.restart_reason ? ` (${pod.restart_reason})` : ""}
                     </span>
                   ]
             )}
@@ -2327,9 +2520,36 @@ function WorkloadDetailsView({
         </section>
       ) : null}
 
+      {workload.kind !== "Pod" && workload.containers.length > 0 ? (
+        <section className="details-section">
+          <h2>Containers</h2>
+          <DetailsTable
+            empty="No containers found."
+            headers={["Container", "Readiness", "Liveness", "Startup", "Privileged"]}
+            rows={workload.containers.map((container) => [
+              container.container,
+              <span className={`status ${container.has_readiness_probe ? "good" : "bad"}`} key={`${container.container}-readiness`} />,
+              <span className={`status ${container.has_liveness_probe ? "good" : "bad"}`} key={`${container.container}-liveness`} />,
+              <span className={`status ${container.has_startup_probe ? "good" : "bad"}`} key={`${container.container}-startup`} />,
+              container.privileged ? <span className="security-flag" key={`${container.container}-privileged`}>Privileged</span> : "-"
+            ])}
+          />
+        </section>
+      ) : null}
+
       {fallback.kind === "CronJob" || hasJobs ? (
         <section className="details-section">
           <h2>Jobs</h2>
+          {fallback.kind === "CronJob" ? (
+            <CreateJobForm
+              context={context}
+              cronJobName={workload.name}
+              namespace={workload.namespace}
+              onCreated={(name) =>
+                onOpenResource({ name, kind: "Job", namespace: workload.namespace, status: "Active", age: "0s" })
+              }
+            />
+          ) : null}
           <DetailsTable
             empty="No jobs found for this CronJob."
             headers={["Name", "Status", "Age"]}
@@ -3433,7 +3653,7 @@ function renderLogLine(line: string, highlight = "") {
   );
 }
 
-function InfoRow({ label, value }: { label: string; value: string }) {
+function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="info-row">
       <span>{label}</span>
@@ -3592,6 +3812,22 @@ function statusTone(status: string) {
   }
 
   return "bad";
+}
+
+function spreadTone(verdict: string) {
+  if (verdict === "SPREAD") {
+    return "good";
+  }
+
+  if (verdict === "SPOF-ZONE" || verdict === "SPOF-NODE") {
+    return "bad";
+  }
+
+  return "warn";
+}
+
+function SpreadBadge({ verdict }: { verdict: string }) {
+  return <span className={`status ${spreadTone(verdict)}`}>{verdict}</span>;
 }
 
 function displayContextName(context: string) {
